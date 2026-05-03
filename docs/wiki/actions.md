@@ -230,3 +230,7 @@ results.
 - Outbound counterpart (macro/credential CRUD + Messages drawer):
   [`remote-actions.md`](remote-actions.md). The two subsystems share
   only `parser.go` (exported `ValidActionName`, `MaxActionNameLen`).
+  Operator-facing invariant: the **Secret Key** value shown in the
+  inbound credential UI here is the *same string* the sender pastes
+  into the outbound `EditCredentialModal` — there is no key exchange,
+  operators copy-paste the value over a side channel they trust.

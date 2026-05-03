@@ -182,6 +182,8 @@ and embedded via `go:embed all:dist` -- see [invariant 12](invariants.md).
 | `src/lib/stores/terminal.svelte.js` | Sidebar-facing summary: unread-bytes total across non-focused sessions for the Sidebar `NotificationBadge` |
 | `public/fonts/saucecodepro-nerd/` | SauceCodePro Nerd Font face declarations for the terminal viewport. Ships with `local()` fallbacks; the woff2 binaries are pending vendoring (see `VERSION.txt` in that directory) |
 | `src/components/` | Reusable: ConfirmDialog, DataTable, FormField, Modal, NewsPopup, PacketLogViewer, PageHeader, ReleaseNoteCard, Sidebar, StationCallsignBanner, SymbolPicker, UpdateAvailableBanner |
+| `src/components/messages/remote_actions/` | Outbound Actions UI: `RemoteActionsDrawer` (zap-icon-anchored thread drawer), `MacroTile` + `MacroEditRow` (fire / edit modes), `FreeFormSender` (ad-hoc `@@<otp>#cmd`), `CredentialsModal` + `EditCredentialModal` + `CredentialPicker` (TOTP secret CRUD), `ReplyBubbleAdornment` (zap-tagged inbound badge). See [`remote-actions.md`](remote-actions.md). |
+| `src/lib/remote_actions/` | Outbound Actions client lib: typed API wrapper, reactive store (Svelte 5 runes singleton), TOTP countdown timer, reply correlation (60s window + status-prefix allowlist), wire-string assembler + send helper that piggy-backs on `POST /api/messages`. |
 | `src/lib/map/` | MapLibre integration (data-store, map-store, layers, sources, popups, APRS icons) |
 | `src/lib/maps/` | Offline-maps client glue (downloads-store, state-bounds, state-list, state-picker) |
 | `src/lib/settings/` | Reactive prefs stores (units, maps, messages-preferences, theme) |
