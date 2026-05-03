@@ -29,6 +29,7 @@
 
   let mode = $state('fire'); // 'fire' | 'edit'
   let cooldownByMacro = $state({}); // { macroId: expiresAtMs }
+  let firingByMacro = $state({}); // { macroId: true } -- in-flight gate
   let now = $state(Date.now());
 
   // Per-second tick so the cooldown numbers refresh.
@@ -50,6 +51,7 @@
   );
 
   function cooldownFor(macroId) {
+    if (firingByMacro[macroId]) return 1; // any non-zero disables the tile
     const expiresMs = cooldownByMacro[macroId];
     if (!expiresMs) return 0;
     const left = Math.ceil((expiresMs - now) / 1000);
@@ -57,35 +59,48 @@
   }
 
   async function fireMacro(m) {
-    let otp = '';
-    let nextBoundaryMs = Date.now() + 30_000;
-    if (m.remote_otp_credential_id != null) {
-      const { data, error } = await remoteOtpApi.generate(m.remote_otp_credential_id);
-      if (error || !data) {
-        toast('OTP fetch failed', 'error');
+    // Synchronous in-flight gate -- prevents a fast double-tap from
+    // queueing a second send between click N and the server-side OTP
+    // fetch resolving. The receiver's replay ring would reject the
+    // dupe anyway, but the operator would see two outbound bubbles and
+    // a `bad_otp:replay` reply for nothing.
+    if (firingByMacro[m.id]) return;
+    firingByMacro = { ...firingByMacro, [m.id]: true };
+    try {
+      let otp = '';
+      let nextBoundaryMs = Date.now() + 30_000;
+      if (m.remote_otp_credential_id != null) {
+        const { data, error } = await remoteOtpApi.generate(m.remote_otp_credential_id);
+        if (error || !data) {
+          toast('OTP fetch failed', 'error');
+          return;
+        }
+        otp = data.code;
+        nextBoundaryMs = new Date(data.expires_at).getTime();
+      } else {
+        // Manual OTP not supported on bare macro tap; the operator must
+        // promote the macro to free-form (Save as macro path) or remove
+        // its credential binding via edit mode then enter the OTP there.
+        toast('Macro has no credential. Edit it to add one or use the free-form sender.', 'warning');
         return;
       }
-      otp = data.code;
-      nextBoundaryMs = new Date(data.expires_at).getTime();
-    } else {
-      // Manual OTP not supported on bare macro tap; the operator must
-      // promote the macro to free-form (Save as macro path) or remove
-      // its credential binding via edit mode then enter the OTP there.
-      toast('Macro has no credential. Edit it to add one or use the free-form sender.', 'warning');
-      return;
-    }
-    try {
-      await sendActionFire({
-        target,
-        otp,
-        actionName: m.action_name,
-        argsString: m.args_string,
-        sendMessage,
-      });
-      cooldownByMacro = { ...cooldownByMacro, [m.id]: nextBoundaryMs };
-      remoteActionsStore.rememberCredForTarget(target, m.remote_otp_credential_id);
-    } catch (e) {
-      toast(`Fire failed: ${e?.message ?? e}`, 'error');
+      try {
+        await sendActionFire({
+          target,
+          otp,
+          actionName: m.action_name,
+          argsString: m.args_string,
+          sendMessage,
+        });
+        cooldownByMacro = { ...cooldownByMacro, [m.id]: nextBoundaryMs };
+        remoteActionsStore.rememberCredForTarget(target, m.remote_otp_credential_id);
+      } catch (e) {
+        toast(`Fire failed: ${e?.message ?? e}`, 'error');
+      }
+    } finally {
+      const next = { ...firingByMacro };
+      delete next[m.id];
+      firingByMacro = next;
     }
   }
 
@@ -138,12 +153,17 @@
   }
 
   async function commitDraft() {
-    const { error } = await remoteMacrosApi.create(savingDraft);
-    savingDraft = null;
-    if (error) {
-      toast('Create failed', 'error');
+    if (!savingDraft?.action_name?.trim()) {
+      toast('Action name required', 'warning');
       return;
     }
+    const { error } = await remoteMacrosApi.create(savingDraft);
+    if (error) {
+      // Keep the draft so the operator can retry without re-typing.
+      toast(`Create failed: ${error.error ?? error.message ?? error}`, 'error');
+      return;
+    }
+    savingDraft = null;
     await remoteActionsStore.loadMacros(target);
   }
 </script>

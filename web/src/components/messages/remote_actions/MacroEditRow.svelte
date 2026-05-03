@@ -24,16 +24,18 @@
   // Re-snapshot editable fields whenever the bound macro identity
   // changes. Plain `$state(macro.label ?? '')` would freeze at the
   // initial prop value (Svelte 5 state_referenced_locally warning) and
-  // never reflect server refreshes / row re-binds.
-  let lastSeenId = null;
+  // never reflect new bindings (e.g. Save-as-macro prefill, server
+  // refresh swapping in a fresh row, parent re-keying a draft).
+  let initialized = false;
+  let lastMacroRef = null;
   $effect.pre(() => {
-    const id = macro?.id ?? null;
-    if (id !== lastSeenId) {
+    if (!initialized || macro !== lastMacroRef) {
       label = macro?.label ?? '';
       actionName = macro?.action_name ?? '';
       argsString = macro?.args_string ?? '';
       credId = macro?.remote_otp_credential_id ?? null;
-      lastSeenId = id;
+      lastMacroRef = macro;
+      initialized = true;
     }
   });
 
