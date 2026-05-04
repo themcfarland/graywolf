@@ -386,14 +386,6 @@
           />
         </div>
       {:else}
-        <p class="section-help">
-          graywolf passes arguments via the form body (POST) or URL
-          tokens (GET).
-          <a href="/handbook/actions-handler-safety-webhooks.html#argument-passing" target="_blank" rel="noopener">
-            How webhook arguments are passed &rarr;
-          </a>
-        </p>
-
         <div class="field narrow">
           <label for="action-method">Method</label>
           <Select
@@ -517,6 +509,17 @@
             </ul>
           </div>
         </details>
+      {:else}
+        <div class="webhook-arg-help">
+          <p>graywolf passes arguments via the form body (POST) or URL tokens (GET).</p>
+          <p>
+            <a
+              href="/handbook/actions-handler-safety-webhooks.html#argument-passing"
+              target="_blank"
+              rel="noopener"
+            >How webhook arguments are passed &rarr;</a>
+          </p>
+        </div>
       {/if}
         </div>
       </section>
@@ -666,18 +669,23 @@
     flex-direction: column;
     gap: 14px;
   }
-  .section-help {
-    margin: 0 0 4px;
+  .webhook-arg-help {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
     font-size: 12px;
     color: var(--color-text-muted, var(--text-muted));
     line-height: 1.5;
   }
-  .section-help a {
+  .webhook-arg-help p {
+    margin: 0;
+  }
+  .webhook-arg-help a {
     color: var(--color-accent, var(--color-primary, #6366f1));
     text-decoration: none;
     font-weight: 600;
   }
-  .section-help a:hover {
+  .webhook-arg-help a:hover {
     text-decoration: underline;
   }
   .field {
