@@ -4,6 +4,7 @@
   import { actionsApi } from '../../lib/actions/api.js';
   import ConfirmDialog from '../ConfirmDialog.svelte';
   import ArgSchemaEditor from './ArgSchemaEditor.svelte';
+  import ArgModeSelect from './ArgModeSelect.svelte';
   import SenderAllowlistEditor from './SenderAllowlistEditor.svelte';
   import HeadersEditor from './HeadersEditor.svelte';
 
@@ -38,6 +39,7 @@
       otp_credential_id: null,
       sender_allowlist: '',
       arg_schema: [],
+      arg_mode: 'kv',
       rate_limit_sec: 5,
       queue_depth: 8,
       enabled: true,
@@ -66,6 +68,7 @@
     return rows.map((r) => ({
       key: r?.key ?? '',
       regex: r?.regex ?? '',
+      max_len: Number.isFinite(r?.max_len) ? r.max_len : 0,
       required: !!r?.required,
     }));
   }
@@ -94,6 +97,24 @@
   $effect(() => {
     if (form.type === 'webhook' && !form.webhook_method) {
       form.webhook_method = 'GET';
+    }
+  });
+
+  // Freeform mode requires exactly one ArgSpec keyed `arg`. When the
+  // operator flips into freeform, normalize the schema so the editor
+  // and backend agree on the single-row contract. The default regex
+  // `^[\x20-\x7E]+$` is printable-ASCII only (defense in depth alongside
+  // the server's control-char floor); 67 mirrors the APRS message cap.
+  $effect(() => {
+    if (form.arg_mode === 'freeform') {
+      if (form.arg_schema.length !== 1 || form.arg_schema[0].key !== 'arg') {
+        form.arg_schema = [{
+          key: 'arg',
+          regex: '^[\\x20-\\x7E]+$',
+          max_len: 67,
+          required: true,
+        }];
+      }
     }
   });
 
@@ -178,7 +199,7 @@
         'name', 'description', 'type', 'command_path', 'working_dir',
         'webhook_method', 'webhook_url', 'webhook_body_template',
         'timeout_sec', 'otp_required', 'otp_credential_id',
-        'sender_allowlist', 'arg_schema', 'rate_limit_sec', 'queue_depth',
+        'sender_allowlist', 'arg_schema', 'arg_mode', 'rate_limit_sec', 'queue_depth',
       ];
       if (known.includes(field)) {
         // Preserve the original index in the error text so the operator
@@ -443,7 +464,12 @@
 
       <div class="field">
         <span class="label">Allowed args</span>
-        <ArgSchemaEditor bind:argSchema={form.arg_schema} bind:this={argEditor} />
+        <ArgModeSelect bind:value={form.arg_mode} />
+        <ArgSchemaEditor
+          bind:argSchema={form.arg_schema}
+          mode={form.arg_mode}
+          bind:this={argEditor}
+        />
       </div>
 
       <div class="field narrow">
