@@ -81,7 +81,7 @@
               aria-label="Toggle remote actions drawer"
               data-testid="thread-actions-toggle"
             >
-              <Icon name="zap" size="md" />
+              <span class="bolt" aria-hidden="true">⚡</span>
             </button>
           </Tooltip.Trigger>
           <Tooltip.Content>Remote Actions</Tooltip.Content>
@@ -252,21 +252,26 @@
     justify-content: center;
     width: 32px;
     height: 32px;
-    border: 1px solid transparent;
-    border-radius: var(--radius);
-    background: transparent;
-    color: var(--color-text-muted);
+    padding: 0;
+    border: none;
+    border-radius: 2px;
+    background: #1a6e94;
+    color: #ffaa00;
     cursor: pointer;
-    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    transition: background 0.15s, transform 0.1s;
   }
-  .zap-btn:hover {
-    background: var(--color-surface-raised);
-    color: var(--color-primary);
-    border-color: var(--color-border);
-  }
+  .zap-btn:hover { background: #1f86b3; }
+  .zap-btn:active { transform: scale(0.95); }
+  .zap-btn:focus { outline: none; }
   .zap-btn:focus-visible {
-    outline: 2px solid var(--color-primary);
-    outline-offset: 2px;
+    outline: none;
+    box-shadow: 0 0 0 2px #ffaa00;
+  }
+  .bolt {
+    font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', system-ui, sans-serif;
+    font-size: 1.1rem;
+    line-height: 1;
+    color: #ffaa00;
   }
 
   .chips {
