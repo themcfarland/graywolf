@@ -72,7 +72,7 @@
   <Drawer.Header>
     <h3 class="title">Message details</h3>
     <Drawer.Close aria-label="Close details">
-      <Icon name="x" size="sm" />
+      <Icon name="x" size="lg" />
     </Drawer.Close>
   </Drawer.Header>
   <Drawer.Body class="meta-body">

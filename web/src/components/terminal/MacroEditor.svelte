@@ -126,7 +126,7 @@
   <Modal.Header>
     <h3 class="modal-title">Edit macros</h3>
     <Modal.Close aria-label="Close">
-      <Icon name="x" size="sm" />
+      <Icon name="x" size="lg" />
     </Modal.Close>
   </Modal.Header>
   <Modal.Body>

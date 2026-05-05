@@ -93,7 +93,7 @@
   <Drawer.Header>
     <h3 class="title">Link telemetry</h3>
     <Drawer.Close aria-label="Close telemetry panel">
-      <Icon name="x" size="sm" />
+      <Icon name="x" size="lg" />
     </Drawer.Close>
   </Drawer.Header>
 

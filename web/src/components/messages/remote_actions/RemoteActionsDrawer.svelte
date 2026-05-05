@@ -184,7 +184,7 @@
           </button>
         {/if}
         <button type="button" class="close" aria-label="Close" onclick={() => (open = false)}>
-          <Icon name="x" size="sm" />
+          <Icon name="x" size="lg" />
         </button>
       </div>
     </header>

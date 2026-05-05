@@ -84,7 +84,7 @@
       aria-label={"Dismiss update notice for v" + updates.latest}
       onclick={onDismiss}
     >
-      <Icon name="x" size="sm" />
+      <Icon name="x" size="lg" />
     </button>
   </aside>
 {/if}

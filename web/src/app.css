@@ -90,6 +90,17 @@ input, select, textarea, button {
   body.messages-thread-open .main-content.full-bleed { height: 100vh; }
 }
 
+/* chonky-ui's default .modal-close (the X button in modal headers) is
+   var(--text-base) -- about 14px -- which is hard to hit on touch and
+   visually undersized next to bigger headers. Bump every modal close
+   button uniformly. */
+.modal-close {
+  font-size: 1.5rem;
+  line-height: 1;
+  padding: 0.25rem 0.5rem;
+  font-weight: 600;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;

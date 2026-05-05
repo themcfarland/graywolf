@@ -211,7 +211,7 @@
   <Modal.Header>
     <h3 class="modal-title">{editing ? 'Edit tactical' : 'Add tactical'}</h3>
     <Modal.Close>
-      <Icon name="x" size="sm" />
+      <Icon name="x" size="lg" />
     </Modal.Close>
   </Modal.Header>
   <Modal.Body>
