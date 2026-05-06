@@ -108,6 +108,27 @@ use ptt_cm108_macos::MacCm108Gpio as PlatformCm108Gpio;
 #[cfg(windows)]
 use ptt_cm108_win::WinCm108Gpio as PlatformCm108Gpio;
 
+// CM108 HID PTT requires hidapi, which has no Android port. Provide a
+// stub that satisfies the type system but always fails to open. The
+// only path that reaches this is Cm108Ptt construction from a runtime
+// PTT method=cm108 config; the POC-A binary never configures PTT.
+#[cfg(target_os = "android")]
+struct AndroidCm108Stub;
+#[cfg(target_os = "android")]
+impl AndroidCm108Stub {
+    fn open(_device: &str) -> Result<Self, String> {
+        Err("CM108 PTT not supported on Android".to_string())
+    }
+}
+#[cfg(target_os = "android")]
+impl Cm108GpioControl for AndroidCm108Stub {
+    fn write_gpio(&mut self, _pin: u8, _level: bool) -> Result<(), String> {
+        Err("CM108 PTT not supported on Android".to_string())
+    }
+}
+#[cfg(target_os = "android")]
+use AndroidCm108Stub as PlatformCm108Gpio;
+
 use crate::ipc::proto::ConfigurePtt;
 
 /// PTT hardware method, parsed from `ConfigurePtt.method`.
