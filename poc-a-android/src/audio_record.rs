@@ -21,6 +21,12 @@ const AUDIO_SOURCE_MIC: i32 = 1;
 const CHANNEL_IN_MONO: i32 = 16;
 const ENCODING_PCM_16BIT: i32 = 2;
 
+/// Software input attenuation applied to every sample before it reaches
+/// the demod. Lets operators trim level without nudging the radio's
+/// volume knob. Set via `INPUT_GAIN_DB` at compile time for the POC; in
+/// the production app this becomes a SharedPreferences slider.
+const INPUT_GAIN_DB: f32 = -6.0;
+
 /// Open an AudioRecord, start it, loop reading short samples and
 /// forwarding to the demod's mpsc queue. Runs on its own thread so
 /// android_main keeps owning the activity event loop.
@@ -107,6 +113,13 @@ pub fn spawn(
                 }
             };
             let mut scratch = vec![0i16; buf_len];
+            // Q15 fixed-point gain so the per-sample loop is integer math.
+            let gain_lin = 10f32.powf(INPUT_GAIN_DB / 20.0);
+            let gain_q15: i32 = (gain_lin * (1 << 15) as f32) as i32;
+            info!(
+                "input gain {:.1} dB ({:.4}x, q15={})",
+                INPUT_GAIN_DB, gain_lin, gain_q15
+            );
             while !stop.load(Ordering::Relaxed) {
                 let n = match read_into(&mut env, global_recorder.as_obj(), &buf, buf_len as i32) {
                     Ok(n) => n,
@@ -127,7 +140,15 @@ pub fn spawn(
                     error!("get_short_array_region: {}", e);
                     break;
                 }
-                let chunk: Vec<i16> = scratch[..take].to_vec();
+                // Apply software gain. Pre-clipped audio can't be
+                // un-clipped, but pulling the level down keeps the demod
+                // loop's integer math from saturating its own running
+                // sums and drops the average noise floor.
+                let mut chunk: Vec<i16> = Vec::with_capacity(take);
+                for &s in &scratch[..take] {
+                    let v = (s as i32 * gain_q15) >> 15;
+                    chunk.push(v.clamp(i16::MIN as i32, i16::MAX as i32) as i16);
+                }
                 if tx.try_send(chunk).is_err() {
                     // demod queue full; drop. Better than blocking the
                     // capture thread and stalling AudioRecord internals.
