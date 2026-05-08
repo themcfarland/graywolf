@@ -74,17 +74,25 @@ object AudioTxTest {
             return false
         }
 
-        if (track.state != AudioTrack.STATE_INITIALIZED) {
-            Log.e(TAG, "AudioTrack state=${track.state} after build; releasing")
+        // MODE_STATIC: post-build state is STATE_NO_STATIC_DATA; the track
+        // becomes STATE_INITIALIZED only after data is written. STATE_UNINITIALIZED
+        // is the only failure mode here.
+        if (track.state == AudioTrack.STATE_UNINITIALIZED) {
+            Log.e(TAG, "AudioTrack uninitialized after build; releasing")
             track.release()
             return false
         }
 
-        Log.i(TAG, "AudioTrack built: rate=$SAMPLE_RATE_HZ samples=${samples.size} bufferBytes=$bufferBytes")
+        Log.i(TAG, "AudioTrack built: rate=$SAMPLE_RATE_HZ samples=${samples.size} bufferBytes=$bufferBytes state=${track.state}")
 
         val written = track.write(samples, 0, samples.size)
         if (written != samples.size) {
             Log.e(TAG, "AudioTrack.write returned $written, expected ${samples.size}")
+            track.release()
+            return false
+        }
+        if (track.state != AudioTrack.STATE_INITIALIZED) {
+            Log.e(TAG, "AudioTrack state=${track.state} after write; expected INITIALIZED")
             track.release()
             return false
         }
