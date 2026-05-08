@@ -9,9 +9,13 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import com.nw5w.graywolf.audio.AudioPump
 import com.nw5w.graywolf.jni.ModemBridge
+import java.io.File
 
 class GraywolfService : Service() {
+    private val audioPump = AudioPump()
+
     override fun onCreate() {
         super.onCreate()
         val mgr = getSystemService(NotificationManager::class.java)!!
@@ -42,11 +46,34 @@ class GraywolfService : Service() {
             "ERROR"
         }
         Log.i(TAG, "modem cdylib version=$v")
+
+        val socketPath = File(cacheDir, "graywolf-modem.sock").absolutePath
+        val rc = ModemBridge.modemStart(socketPath, /* gainDb = */ -6.0f)
+        if (rc != 0) {
+            Log.e(TAG, "modemStart rc=$rc; aborting")
+            stopSelf()
+            return
+        }
+        val ready = ModemBridge.modemAwaitReady(10_000)
+        Log.i(TAG, "modemAwaitReady=$ready")
+        if (!ready) {
+            Log.e(TAG, "modem not ready in 10s; aborting")
+            ModemBridge.modemStop()
+            stopSelf()
+            return
+        }
+        audioPump.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        audioPump.stop()
+        ModemBridge.modemStop()
+        super.onDestroy()
+    }
 
     companion object {
         private const val TAG = "GraywolfService"
