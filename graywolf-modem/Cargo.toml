@@ -4,6 +4,10 @@ version = "0.13.2"
 edition = "2021"
 description = "Rust port of the Dire Wolf AFSK demodulator"
 
+[lib]
+name = "graywolfmodem"
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 claxon = "0.4"
