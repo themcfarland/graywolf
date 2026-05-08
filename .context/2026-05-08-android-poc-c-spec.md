@@ -31,7 +31,7 @@ the middle of phase 5.
 POC-C is **green** when all four hold on the reference tablet:
 
 1. **Frame builds in Rust.** The cdylib's existing TX DSP synthesizes
-   a valid AX.25 UI frame for `NW5W-8>APZGRY:!4715.20N/12203.50W<
+   a valid AX.25 UI frame for `NW5W-8>APZGRY:!4028.56N/11150.71W<
    POC-C TX test - NW5W bench` into a 22 050 Hz mono PCM16 buffer
    (or whatever sample rate matches POC-B's RX path; see §4.2.1
    note). Buffer length matches expected on-air duration for a 1200-
@@ -48,7 +48,7 @@ POC-C is **green** when all four hold on the reference tablet:
    (see §3) decodes the frame. The decoded text matches the
    source string exactly:
    ```
-   NW5W-8>APZGRY:!4715.20N/12203.50W< POC-C TX test - NW5W bench
+   NW5W-8>APZGRY:!4028.56N/11150.71W< POC-C TX test - NW5W bench
    ```
    Source callsign, destination, info field, symbol — all bit-
    identical.
@@ -104,7 +104,7 @@ POC-C is **yellow** (proceed with documented caveats) if:
   N6's pump-pause logic.
 - **Multiple frames or different payloads.** One canned frame.
 - **Symbol picker, callsign editor, SSID dropdown.** Hardcoded
-  `NW5W-8` + motorcycle (`/<`) + the placeholder coords above.
+  `NW5W-8` + motorcycle (`/<`) + the bench coords above.
   Operator-facing TX UI is phase-5+ work.
 - **Real radio in the loop.** Reference receiver decodes from a
   wired audio path, not over RF. (Optional Stage 2 in §5 adds the
@@ -198,14 +198,14 @@ The canned frame as bytes (the part Rust will modulate):
 - Digipeater path: empty (no `WIDE1-1`, no `WIDE2-2`). Direct,
   point-to-point. The reference receiver is the only intended hop.
 - AX.25 control: UI frame (`0x03`), PID `0xF0` (no L3 protocol).
-- Info field: `!4715.20N/12203.50W< POC-C TX test - NW5W bench`
+- Info field: `!4028.56N/11150.71W< POC-C TX test - NW5W bench`
   - `!` — APRS position, no timestamp, no msg capability.
-  - lat: `4715.20N`. **Operator should overwrite with bench coords
-    before flight if running near a real APRS network**, but the
-    placeholder above is fine for a closed-loop wired test where
-    nothing transmits over RF.
+  - lat: `4028.56N` — operator's bench coordinates
+    (40.47594469752372, -111.84510300876651), provided by NW5W. Stage
+    1 doesn't transmit over RF anyway; Stage 2 transmits real RF from
+    the bench, so the broadcast position is honest.
   - sym table: `/` (primary).
-  - lon: `12203.50W`.
+  - lon: `11150.71W`.
   - sym code: `<` (motorcycle).
   - comment: ` POC-C TX test - NW5W bench` — leading space
     intentional; standard APRS position-comment formatting. The
