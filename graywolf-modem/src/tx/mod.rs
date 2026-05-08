@@ -7,6 +7,7 @@
 //! [`crate::demod_afsk::AfskDemodulator`].
 
 pub mod afsk_mod;
+pub mod canned;
 mod error;
 pub mod hdlc_encode;
 pub(crate) mod ptt;
