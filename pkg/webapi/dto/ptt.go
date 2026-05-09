@@ -29,6 +29,13 @@ func (r PttRequest) Validate() error {
 	if r.Method == "" {
 		return fmt.Errorf("method is required")
 	}
+	// channel_id is the upsert key; 0 has no corresponding Channel row
+	// (FK would fail anyway). Reject up front so the rekey branch can't
+	// be tricked into a same-channel coalesce by a missing/zero body
+	// field.
+	if r.ChannelID == 0 {
+		return fmt.Errorf("channel_id is required")
+	}
 	return nil
 }
 
@@ -46,9 +53,11 @@ func (r PttRequest) ToModel() configstore.PttConfig {
 	}
 }
 
-// ToUpdate maps an update request to a storage model, pinning the
-// channel id from the URL instead of the body so path-wins semantics
-// match the current handler.
+// ToUpdate maps an update request to a storage model with the URL's
+// channel id forced into the result. Used on the same-channel branch
+// of updatePttConfig (where body.channel_id == URL channel_id, or the
+// body omitted channel_id and the URL fills it in). The cross-channel
+// rekey branch calls ToModel directly so the body's channel_id wins.
 func (r PttRequest) ToUpdate(channelID uint32) configstore.PttConfig {
 	m := r.ToModel()
 	m.ChannelID = channelID
