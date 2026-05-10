@@ -1,7 +1,8 @@
 <script>
   import './app.css';
-  import Router, { location } from 'svelte-spa-router';
+  import Router, { location, replace } from 'svelte-spa-router';
   import { Toaster } from '@chrissnell/chonky-ui';
+  import { Platform } from './lib/platform.js';
   import Sidebar from './components/Sidebar.svelte';
   import NewsPopup from './components/NewsPopup.svelte';
   import { start as startMessagesTransport } from './lib/messagesTransport.js';
@@ -33,7 +34,7 @@
   import TerminalTranscripts from './routes/TerminalTranscripts.svelte';
   import Actions from './routes/Actions.svelte';
 
-  const routes = {
+  const baseRoutes = {
     '/login': Login,
     '/': Dashboard,
     '/map': LiveMapV2,
@@ -59,6 +60,13 @@
     '/preferences/maps': MapsSettings,
     '/about': About,
   };
+  const routes = (() => {
+    if (Platform.kind !== 'android') return baseRoutes;
+    const r = { ...baseRoutes };
+    delete r['/agw'];
+    delete r['/login'];
+    return r;
+  })();
 
   let currentPath = $state('');
   $effect(() => {
@@ -66,7 +74,17 @@
     return unsub;
   });
 
-  let isLoginPage = $derived(currentPath === '/login');
+  let isLoginPage = $derived(currentPath === '/login' && Platform.kind !== 'android');
+
+  $effect(() => {
+    if (Platform.kind === 'android' && currentPath === '/login') {
+      // replace() uses history.replaceState — no new history entry, so
+      // pressing back doesn't loop the user through /login again. Direct
+      // `window.location.hash = '#/'` would push, causing a visible
+      // navigation ping-pong on Android's back button.
+      replace('/');
+    }
+  });
 
   let version = $state('');
   let authChecked = $state(false);
