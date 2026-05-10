@@ -16,11 +16,12 @@ use jni::{JNIEnv, JavaVM};
 use log::{error, info, warn};
 
 use crate::demod_afsk_multi::{MultiAfskDemodulator, RECOMMENDED_3DEMOD};
-use crate::ipc::proto::{IpcMessage, ReceivedFrame};
-use crate::ipc::server::IpcServer;
+use crate::ipc::proto::{ipc_message, DeviceLevelUpdate, IpcMessage, ReceivedFrame};
+use crate::ipc::server::{IpcInbound, IpcServer};
 use crate::rxonly::feed_chunk;
 
 pub mod audio;
+pub mod config_state;
 
 const LOG_TAG: &str = "graywolfmodem";
 const TARGET_SAMPLE_RATE: u32 = 22_050;
@@ -259,6 +260,11 @@ fn run_demod(
     ready.store(true, Ordering::Release);
 
     let (frames_tx, frames_rx) = sync_channel::<ReceivedFrame>(64);
+    // Bounded level queue. ingest() runs at audio rate but only emits at
+    // ~5 Hz, so 32 slots is more than enough; try_send drops on full to
+    // protect the JNI audio thread.
+    let (level_tx, level_rx) = sync_channel::<DeviceLevelUpdate>(32);
+    audio::install_level_tx(level_tx);
     let stop_dsp = stop.clone();
     let dsp_join = thread::Builder::new()
         .name("graywolfmodem-dsp".into())
@@ -280,8 +286,14 @@ fn run_demod(
                                 info!("poc-b: first_frame_decoded");
                                 first_frame_logged = true;
                             }
+                            // Tag the frame with the operator-configured
+                            // channel id (captured from ConfigureChannel
+                            // IPC) instead of the demodulator's internal
+                            // 0-indexed `frame.chan`. Without this tag
+                            // the Go dispatcher can't attribute frames
+                            // to a per-channel rx_frames counter.
                             let pb = ReceivedFrame {
-                                channel: frame.chan as u32,
+                                channel: config_state::channel_id(),
                                 subchan: frame.subchan as u32,
                                 slice: frame.slice as u32,
                                 data: frame.data,
@@ -313,28 +325,59 @@ fn run_demod(
     info!("poc-b: ipc_client_connected");
 
     while !stop.load(Ordering::Relaxed) {
-        match frames_rx.recv_timeout(Duration::from_millis(250)) {
+        // Short timeout so the loop pumps both frame and level queues
+        // without head-of-line blocking on either.
+        match frames_rx.recv_timeout(Duration::from_millis(50)) {
             Ok(pb) => {
                 if let Err(e) = handle.send(&IpcMessage::received_frame(pb)) {
-                    warn!("ipc send: {}", e);
+                    warn!("ipc send (frame): {}", e);
                     break;
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        // Drain any inbound IPC messages so the channel doesn't back up.
-        // POC-B doesn't act on configure messages — phase 3 wires them in.
-        while let Ok(_msg) = ipc_rx.try_recv() {}
+
+        // Drain queued level updates (~5 Hz cadence; usually 0 or 1 per
+        // tick). Non-blocking; never head-of-line-blocks the frame path.
+        while let Ok(level) = level_rx.try_recv() {
+            if let Err(e) = handle.send(&IpcMessage::device_level_update(level)) {
+                warn!("ipc send (level): {}", e);
+                break;
+            }
+        }
+
+        // Drain any inbound IPC messages from the Go side. We act on
+        // ConfigureChannel to capture the operator-set channel and
+        // input_device_id mapping; everything else is currently a no-op
+        // on Android (TX path is phase 5).
+        while let Ok(inbound) = ipc_rx.try_recv() {
+            if let IpcInbound::Message(msg) = inbound {
+                if let Some(ipc_message::Payload::ConfigureChannel(cc)) = msg.payload {
+                    let chan = cc.channel;
+                    let dev = if cc.input_device_id != 0 {
+                        cc.input_device_id
+                    } else {
+                        cc.device_id
+                    };
+                    info!(
+                        "configure channel: channel={} input_device_id={}",
+                        chan, dev
+                    );
+                    config_state::set_from_configure(chan, dev);
+                }
+            }
+        }
     }
 
     // Close the write side so the reader thread observes EOF and exits.
     drop(handle);
     let _ = ipc_join.join();
+    audio::clear_level_tx();
 
     // On exit (any path), flip ready to false so the supervisor's
-    // modem-health poll (Task 15) detects modem death even if the Go
-    // child is still alive.
+    // modem-health poll detects modem death even if the Go child is
+    // still alive.
     ready.store(false, Ordering::Release);
     let _ = dsp_join.join();
     info!("demod loop exiting");
