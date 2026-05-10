@@ -16,13 +16,11 @@ import com.nw5w.graywolf.binaries.Supervisor
 import com.nw5w.graywolf.jni.ModemBridge
 import com.nw5w.graywolf.platformsvc.PlatformServer
 import java.io.File
-import kotlin.concurrent.thread
 
 class GraywolfService : Service() {
     private val audioPump = AudioPump()
     private var goLauncher: GoLauncher? = null
     private var platformServer: PlatformServer? = null
-    private var gainPoller: Thread? = null
     private val supervisor = Supervisor(onRestart = ::supervisorRestart)
 
     private fun socketPath(): String =
@@ -133,27 +131,6 @@ class GraywolfService : Service() {
             return
         }
 
-        gainPoller = thread(start = true, isDaemon = true, name = "gain-poll") {
-            val token = (application as GraywolfApp).bearerToken
-            var last = Float.NaN
-            val rx = Regex("""\"db\":(-?\d+(?:\.\d+)?)""")
-            while (!Thread.currentThread().isInterrupted) {
-                try {
-                    val u = java.net.URL("http://127.0.0.1:8080/api/_internal/gain")
-                    val c = u.openConnection() as java.net.HttpURLConnection
-                    c.setRequestProperty("Authorization", "Bearer $token")
-                    val body = c.inputStream.bufferedReader().readText()
-                    val db = rx.find(body)?.groupValues?.get(1)?.toFloatOrNull()
-                    if (db != null && db != last) {
-                        ModemBridge.modemSetGainDb(db)
-                        Log.i(TAG, "poc-b: gain_applied db=$db")
-                        last = db
-                    }
-                } catch (_: Throwable) { /* swallow */ }
-                try { Thread.sleep(1000) } catch (_: InterruptedException) { return@thread }
-            }
-        }
-
         supervisor.start { goLauncher?.process }
     }
 
@@ -163,8 +140,6 @@ class GraywolfService : Service() {
 
     override fun onDestroy() {
         supervisor.stop()
-        gainPoller?.interrupt()
-        gainPoller = null
         goListenerReady = false
         goLauncher?.stop()
         audioPump.stop()
