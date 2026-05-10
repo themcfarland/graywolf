@@ -20,6 +20,7 @@ import com.nw5w.graywolf.BuildConfig
 import com.nw5w.graywolf.audio.AudioPump
 import com.nw5w.graywolf.binaries.GoLauncher
 import com.nw5w.graywolf.binaries.Supervisor
+import com.nw5w.graywolf.gps.GpsAdapter
 import com.nw5w.graywolf.jni.ModemBridge
 import com.nw5w.graywolf.platformsvc.PlatformServer
 import java.io.File
@@ -28,6 +29,7 @@ class GraywolfService : Service() {
     private val audioPump = AudioPump()
     private var goLauncher: GoLauncher? = null
     private var platformServer: PlatformServer? = null
+    private var gpsAdapter: GpsAdapter? = null
     private val supervisor = Supervisor(onRestart = ::supervisorRestart)
 
     private val stopReceiver = object : BroadcastReceiver() {
@@ -193,6 +195,7 @@ class GraywolfService : Service() {
             serverVersion = BuildConfig.VERSION_NAME,
             schemaVersion = 1,
         ).also { it.start() }
+        gpsAdapter = GpsAdapter(this, platformServer!!).also { it.start() }
 
         if (!bootModem()) {
             stopSelf()
@@ -216,6 +219,8 @@ class GraywolfService : Service() {
     override fun onDestroy() {
         supervisor.stop()
         goListenerReady = false
+        gpsAdapter?.stop()
+        gpsAdapter = null
         goLauncher?.stop()
         audioPump.stop()
         platformServer?.stop()
