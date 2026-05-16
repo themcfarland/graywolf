@@ -730,12 +730,25 @@ impl Modem {
     }
 
     fn handle_scan_input_levels(&self, req: ScanInputLevels) {
+        // pcm_ids held open by a running channel — the scanner reports
+        // these as "in use" instead of failing to open a busy device.
+        let mut in_use_input: HashMap<String, (u32, u32)> = HashMap::new();
+        for id in self.active_devices.keys() {
+            if let Some(acfg) = self.audio_configs.get(id) {
+                if acfg.source_type == "soundcard" && !acfg.device_name.is_empty() {
+                    in_use_input.insert(
+                        acfg.device_name.clone(),
+                        (acfg.sample_rate, acfg.channels),
+                    );
+                }
+            }
+        }
         let handle = self.handle.clone();
         std::thread::Builder::new()
             .name("scan-input-levels".into())
             .spawn(move || {
                 let duration_ms = if req.duration_ms == 0 { 500 } else { req.duration_ms };
-                let results = scan_input_levels(duration_ms);
+                let results = scan_input_levels(duration_ms, &in_use_input);
                 let msg = IpcMessage::input_level_scan_result(InputLevelScanResult {
                     request_id: req.request_id,
                     devices: results,
@@ -1900,23 +1913,106 @@ fn enumerate_audio_devices(
     devices
 }
 
-/// Briefly open each available input device and measure peak level.
+/// Open one input device, capture for `duration`, return its peak level.
+/// Errors (busy device, bad config, unsupported format) come back inside
+/// the `error` field rather than as a panic — the scanner reports them.
 #[allow(deprecated)] // DeviceTrait::name() returns the raw pcm_id we need
-fn scan_input_levels(duration_ms: u32) -> Vec<InputDeviceLevel> {
-    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+fn measure_input_level(
+    dev: &cpal::Device,
+    pcm_id: &str,
+    duration: std::time::Duration,
+) -> InputDeviceLevel {
+    use cpal::traits::{DeviceTrait, StreamTrait};
     use cpal::SampleFormat;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+
+    let err = |e: String| InputDeviceLevel {
+        name: pcm_id.to_string(),
+        peak_dbfs: NOISE_FLOOR_DBFS,
+        has_signal: false,
+        error: e,
+    };
+
+    // Negotiate the probe config the same way device detection does —
+    // shared so the scanner and the detector can't drift apart.
+    // default_input_config() is avoided: it can return parameters a raw
+    // hw: ALSA device rejects with EINVAL.
+    let (sample_format, stream_cfg) = match audio::soundcard::pick_input_probe_config(dev) {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+
+    let peak = Arc::new(AtomicU32::new(0f32.to_bits()));
+    let stream = match sample_format {
+        SampleFormat::F32 => {
+            let pw = peak.clone();
+            dev.build_input_stream(&stream_cfg,
+                move |data: &[f32], _| update_peak_f32(&pw, data),
+                |e| eprintln!("scan level error: {}", e), None)
+        }
+        SampleFormat::I16 => {
+            let pw = peak.clone();
+            dev.build_input_stream(&stream_cfg,
+                move |data: &[i16], _| update_peak_i16(&pw, data),
+                |e| eprintln!("scan level error: {}", e), None)
+        }
+        SampleFormat::U16 => {
+            let pw = peak.clone();
+            dev.build_input_stream(&stream_cfg,
+                move |data: &[u16], _| update_peak_u16(&pw, data),
+                |e| eprintln!("scan level error: {}", e), None)
+        }
+        other => return err(format!("unsupported format: {:?}", other)),
+    };
+
+    match stream {
+        Ok(s) => {
+            if s.play().is_ok() {
+                std::thread::sleep(duration);
+            }
+            drop(s);
+            let peak_lin = f32::from_bits(peak.load(Ordering::Relaxed));
+            let peak_db = if peak_lin > 0.0 {
+                20.0 * peak_lin.log10()
+            } else {
+                NOISE_FLOOR_DBFS
+            };
+            InputDeviceLevel {
+                name: pcm_id.to_string(),
+                peak_dbfs: peak_db,
+                has_signal: peak_db > SIGNAL_THRESHOLD_DBFS,
+                error: String::new(),
+            }
+        }
+        Err(e) => err(format!("{}", e)),
+    }
+}
+
+/// Measure peak input level on each capture device.
+///
+/// `in_use` lists pcm_ids held open by a running channel. On Linux the
+/// list is collapsed to one row per physical card (same canonicalization
+/// as device detection), and an in-use card reports a clear "busy"
+/// status instead of cpal's misleading "device no longer available" —
+/// you cannot independently scan a device a running channel holds; its
+/// live level shows on the device card.
+#[allow(deprecated)] // DeviceTrait::name() returns the raw pcm_id we need
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+fn scan_input_levels(
+    duration_ms: u32,
+    in_use: &HashMap<String, (u32, u32)>,
+) -> Vec<InputDeviceLevel> {
+    use cpal::traits::{DeviceTrait, HostTrait};
 
     let host = cpal::default_host();
     let inputs = match host.input_devices() {
         Ok(i) => i.collect::<Vec<_>>(),
         Err(_) => return Vec::new(),
     };
-
     let duration = std::time::Duration::from_millis(duration_ms as u64);
-    let mut results = Vec::new();
 
+    let mut devs: Vec<(String, cpal::Device)> = Vec::new();
     for dev in inputs {
         let pcm_id = match dev.name() {
             Ok(id) => id,
@@ -1924,89 +2020,74 @@ fn scan_input_levels(duration_ms: u32) -> Vec<InputDeviceLevel> {
         };
         // Skip virtual/plugin ALSA devices that can poison the ALSA
         // backend when their PCM open fails.
-        if !is_useful_alsa_device(&pcm_id) {
+        if pcm_id == "null" || !is_useful_alsa_device(&pcm_id) {
             continue;
         }
-        // Negotiate the probe config the same way device detection
-        // does — shared so the scanner and the detector can't drift
-        // apart. default_input_config() is avoided: it can return
-        // parameters a raw hw: ALSA device rejects with EINVAL.
-        let (sample_format, stream_cfg) =
-            match audio::soundcard::pick_input_probe_config(&dev) {
-                Ok(v) => v,
-                Err(e) => {
-                    results.push(InputDeviceLevel {
-                        name: pcm_id,
-                        peak_dbfs: NOISE_FLOOR_DBFS,
-                        has_signal: false,
-                        error: e,
-                    });
-                    continue;
-                }
-            };
+        devs.push((pcm_id, dev));
+    }
 
-        let peak = Arc::new(AtomicU32::new(0f32.to_bits()));
+    let mut results: Vec<InputDeviceLevel> = Vec::new();
 
-        // Build stream using the device's native sample format.
-        let stream = match sample_format {
-            SampleFormat::F32 => {
-                let pw = peak.clone();
-                dev.build_input_stream(&stream_cfg,
-                    move |data: &[f32], _| update_peak_f32(&pw, data),
-                    |e| eprintln!("scan level error: {}", e), None)
+    #[cfg(target_os = "linux")]
+    {
+        use crate::audio::soundcard::{
+            alsa_canonical_key, build_card_resolver, group_alsa_cards, parse_proc_asound_cards,
+        };
+        let cards = std::fs::read_to_string("/proc/asound/cards")
+            .map(|c| parse_proc_asound_cards(&c))
+            .unwrap_or_default();
+        let resolver = build_card_resolver(&cards);
+        let canon = |pcm: &str| alsa_canonical_key(pcm, |t| resolver.get(t).copied());
+
+        let mut all_pcms: Vec<String> = devs.iter().map(|(p, _)| p.clone()).collect();
+        for pcm in in_use.keys() {
+            if !all_pcms.contains(pcm) {
+                all_pcms.push(pcm.clone());
             }
-            SampleFormat::I16 => {
-                let pw = peak.clone();
-                dev.build_input_stream(&stream_cfg,
-                    move |data: &[i16], _| update_peak_i16(&pw, data),
-                    |e| eprintln!("scan level error: {}", e), None)
-            }
-            SampleFormat::U16 => {
-                let pw = peak.clone();
-                dev.build_input_stream(&stream_cfg,
-                    move |data: &[u16], _| update_peak_u16(&pw, data),
-                    |e| eprintln!("scan level error: {}", e), None)
-            }
-            _ => {
+        }
+        let groups = group_alsa_cards(&all_pcms, |t| resolver.get(t).copied());
+
+        // canonical card key -> the in-use pcm_id on that card
+        let mut in_use_by_card: HashMap<String, String> = HashMap::new();
+        for pcm in in_use.keys() {
+            in_use_by_card.entry(canon(pcm)).or_insert_with(|| pcm.clone());
+        }
+        let find_dev = |pcm: &str| devs.iter().find(|(p, _)| p == pcm).map(|(_, d)| d);
+
+        for group in groups {
+            if let Some(pcm) = in_use_by_card.get(&group.key) {
                 results.push(InputDeviceLevel {
-                    name: pcm_id,
+                    name: pcm.clone(),
                     peak_dbfs: NOISE_FLOOR_DBFS,
                     has_signal: false,
-                    error: format!("unsupported format: {:?}", sample_format),
+                    error: "in use by a running channel — live level is shown on the device card"
+                        .to_string(),
                 });
                 continue;
             }
-        };
-
-        match stream {
-            Ok(s) => {
-                if s.play().is_ok() {
-                    std::thread::sleep(duration);
+            // Idle card: measure its top-ranked alias once (one row per
+            // physical card, not per hw:/plughw: alias).
+            let mut chosen: Option<String> = None;
+            for cand in &group.candidates {
+                if find_dev(cand).is_some() {
+                    chosen = Some(cand.clone());
+                    break;
                 }
-                drop(s);
-
-                let peak_lin = f32::from_bits(peak.load(Ordering::Relaxed));
-                let peak_db = if peak_lin > 0.0 {
-                    20.0 * peak_lin.log10()
-                } else {
-                    NOISE_FLOOR_DBFS
-                };
-
-                results.push(InputDeviceLevel {
-                    name: pcm_id,
-                    peak_dbfs: peak_db,
-                    has_signal: peak_db > SIGNAL_THRESHOLD_DBFS,
-                    error: String::new(),
-                });
             }
-            Err(e) => {
-                results.push(InputDeviceLevel {
-                    name: pcm_id,
-                    peak_dbfs: NOISE_FLOOR_DBFS,
-                    has_signal: false,
-                    error: format!("{}", e),
-                });
+            let pcm = match chosen {
+                Some(c) => c,
+                None => continue,
+            };
+            if let Some(dev) = find_dev(&pcm) {
+                results.push(measure_input_level(dev, &pcm, duration));
             }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        for (pcm_id, dev) in &devs {
+            results.push(measure_input_level(dev, pcm_id, duration));
         }
     }
 
