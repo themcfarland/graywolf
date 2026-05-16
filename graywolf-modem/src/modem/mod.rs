@@ -1414,6 +1414,11 @@ fn is_useful_alsa_device(_pcm_id: &str) -> bool {
 /// Shared between input and output enumeration — the only difference is
 /// which config query method (`supported_input_configs` vs
 /// `supported_output_configs`) the caller passes via `get_configs`.
+///
+/// Non-Linux only: Linux input/output go through
+/// `collect_input_devices_linux` / `collect_output_devices_linux`, which
+/// add physical-card dedup, capture probing, and the in-use cache.
+#[cfg(not(target_os = "linux"))]
 #[allow(deprecated)] // DeviceTrait::name() gives the raw pcm_id we need
 fn collect_devices<I>(
     devices: impl Iterator<Item = cpal::Device>,
@@ -1682,6 +1687,133 @@ fn collect_input_devices_linux(
     out
 }
 
+/// Linux playback-device collection. Same physical-card dedup as the
+/// capture path, but **no probe** (output is not stream-tested; cheap
+/// chips don't exhibit the capture POLLERR and probing would make
+/// noise). One entry per physical card: the in-use card is surfaced
+/// from the cache snapshot (never opened — the AIOC's shared in/out PCM
+/// fails `supported_output_configs()` while RX holds it), and an idle
+/// card surfaces its top-ranked alias (`plughw:CARD=<name>` first).
+/// `recommended` stays the string heuristic for outputs.
+#[cfg(target_os = "linux")]
+#[allow(deprecated)] // DeviceTrait::name() gives the raw pcm_id we need
+fn collect_output_devices_linux(
+    outputs: impl Iterator<Item = cpal::Device>,
+    in_use: &HashMap<String, (u32, u32)>,
+    host_api: &str,
+    default_output_name: Option<&str>,
+) -> Vec<AudioDeviceInfo> {
+    use crate::audio::soundcard::{
+        alsa_canonical_key, build_card_resolver, group_alsa_cards, is_recommended_pcm_id,
+        parse_proc_asound_cards,
+    };
+    use cpal::traits::DeviceTrait;
+
+    let mut devs: Vec<(String, cpal::Device)> = Vec::new();
+    for dev in outputs {
+        let pcm_id = match dev.name() {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+        if pcm_id == "null" || !is_useful_alsa_device(&pcm_id) {
+            continue;
+        }
+        devs.push((pcm_id, dev));
+    }
+
+    let cards = std::fs::read_to_string("/proc/asound/cards")
+        .map(|c| parse_proc_asound_cards(&c))
+        .unwrap_or_default();
+    let resolver = build_card_resolver(&cards);
+    let canon = |pcm: &str| alsa_canonical_key(pcm, |t| resolver.get(t).copied());
+
+    let mut all_pcms: Vec<String> = devs.iter().map(|(p, _)| p.clone()).collect();
+    for pcm in in_use.keys() {
+        if !all_pcms.contains(pcm) {
+            all_pcms.push(pcm.clone());
+        }
+    }
+    let groups = group_alsa_cards(&all_pcms, |t| resolver.get(t).copied());
+
+    let mut in_use_by_card: HashMap<String, (String, u32, u32)> = HashMap::new();
+    for (pcm, (sr, ch)) in in_use {
+        in_use_by_card
+            .entry(canon(pcm))
+            .or_insert_with(|| (pcm.clone(), *sr, *ch));
+    }
+
+    let find_dev = |pcm: &str| devs.iter().find(|(p, _)| p == pcm).map(|(_, d)| d);
+    let configs_for = |dev: &cpal::Device| -> (Vec<u32>, Vec<u32>) {
+        let mut sample_rates = Vec::new();
+        let mut channel_counts = Vec::new();
+        if let Ok(configs) = dev.supported_output_configs() {
+            for cfg in configs {
+                let (min_rate, max_rate) = (cfg.min_sample_rate(), cfg.max_sample_rate());
+                for &rate in audio::STANDARD_SAMPLE_RATES {
+                    if rate >= min_rate && rate <= max_rate && !sample_rates.contains(&rate) {
+                        sample_rates.push(rate);
+                    }
+                }
+                let c = cfg.channels() as u32;
+                if !channel_counts.contains(&c) {
+                    channel_counts.push(c);
+                }
+            }
+        }
+        (sample_rates, channel_counts)
+    };
+
+    let kind: i32 = AudioDeviceKind::Output.into();
+    let mut out = Vec::new();
+    for group in groups {
+        if let Some((pcm, sr, ch)) = in_use_by_card.get(&group.key) {
+            out.push(AudioDeviceInfo {
+                name: alsa_card_description(pcm),
+                stable_id: pcm.clone(),
+                kind,
+                sample_rates: vec![*sr],
+                channel_counts: vec![*ch],
+                host_api: host_api.to_string(),
+                is_default: false,
+                description: alsa_card_description(pcm),
+                recommended: is_recommended_pcm_id(pcm),
+            });
+            continue;
+        }
+
+        // Idle card: no probing for outputs — take the top-ranked
+        // alias (plughw:<name> first). Drop a card with no usable
+        // config ranges (matches prior behavior for dead nodes).
+        let pcm = match group.candidates.first() {
+            Some(c) => c.clone(),
+            None => continue,
+        };
+        let dev = find_dev(&pcm);
+        let (sample_rates, channel_counts) = dev.map(|d| configs_for(d)).unwrap_or_default();
+        if sample_rates.is_empty() || channel_counts.is_empty() {
+            continue;
+        }
+        let display_name = dev
+            .and_then(|d| d.description().ok())
+            .map(|d| d.name().to_string())
+            .unwrap_or_else(|| alsa_card_description(&pcm));
+        let is_default = default_output_name == Some(display_name.as_str());
+
+        out.push(AudioDeviceInfo {
+            name: display_name,
+            stable_id: pcm.clone(),
+            kind,
+            sample_rates,
+            channel_counts,
+            host_api: host_api.to_string(),
+            is_default,
+            description: alsa_card_description(&pcm),
+            recommended: is_recommended_pcm_id(&pcm),
+        });
+    }
+    out
+}
+
 /// `in_use_input` / `in_use_output` map each pcm_id currently held open
 /// by a live capture / playback stream to its running `(sample_rate,
 /// channels)`. Linux uses them to surface in-use cards from cache
@@ -1743,52 +1875,24 @@ fn enumerate_audio_devices(
 
     if include_output {
         if let Ok(outputs) = host.output_devices() {
-            devices.extend(collect_devices(
-                outputs,
-                AudioDeviceKind::Output.into(),
-                default_output_name.as_deref(),
-                &host_name,
-                |d| d.supported_output_configs(),
-            ));
-        }
-
-        // Linux: an output card held open (e.g. AIOC's shared in/out PCM
-        // while RX captures) makes supported_output_configs() fail, so
-        // collect_devices drops it above. Re-append configured/in-use
-        // outputs from cache — one per physical card, never opening the
-        // device — so a configured output never vanishes from detection.
-        #[cfg(target_os = "linux")]
-        {
-            use crate::audio::soundcard::{
-                alsa_canonical_key, build_card_resolver, is_recommended_pcm_id,
-                parse_proc_asound_cards,
-            };
-            let cards = std::fs::read_to_string("/proc/asound/cards")
-                .map(|c| parse_proc_asound_cards(&c))
-                .unwrap_or_default();
-            let resolver = build_card_resolver(&cards);
-            let out_kind: i32 = AudioDeviceKind::Output.into();
-            let mut seen_out_cards: std::collections::HashSet<String> = devices
-                .iter()
-                .filter(|d| d.kind == out_kind)
-                .map(|d| alsa_canonical_key(&d.stable_id, |t| resolver.get(t).copied()))
-                .collect();
-            for (pcm, (sr, ch)) in in_use_output {
-                let key = alsa_canonical_key(pcm, |t| resolver.get(t).copied());
-                if !seen_out_cards.insert(key) {
-                    continue; // card already present from collect_devices
-                }
-                devices.push(AudioDeviceInfo {
-                    name: alsa_card_description(pcm),
-                    stable_id: pcm.clone(),
-                    kind: out_kind,
-                    sample_rates: vec![*sr],
-                    channel_counts: vec![*ch],
-                    host_api: host_name.clone(),
-                    is_default: false,
-                    description: alsa_card_description(pcm),
-                    recommended: is_recommended_pcm_id(pcm),
-                });
+            #[cfg(target_os = "linux")]
+            {
+                devices.extend(collect_output_devices_linux(
+                    outputs,
+                    in_use_output,
+                    &host_name,
+                    default_output_name.as_deref(),
+                ));
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                devices.extend(collect_devices(
+                    outputs,
+                    AudioDeviceKind::Output.into(),
+                    default_output_name.as_deref(),
+                    &host_name,
+                    |d| d.supported_output_configs(),
+                ));
             }
         }
     }
