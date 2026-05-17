@@ -16,6 +16,7 @@ import com.hoho.android.usbserial.driver.CdcAcmSerialDriver
 import com.hoho.android.usbserial.driver.Cp21xxSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
+import com.nw5w.graywolf.jni.UsbPttCallback
 import org.json.JSONObject
 
 /**
@@ -39,7 +40,7 @@ import org.json.JSONObject
  * audio interfaces. Doing otherwise detaches the kernel snd-usb-audio driver
  * and breaks AudioRecord on this device.
  */
-object UsbPttAdapter {
+object UsbPttAdapter : UsbPttCallback {
     private const val TAG = "UsbPttAdapter"
     private const val ACTION_USB_PERMISSION = "com.nw5w.graywolf.USB_PERMISSION"
 
@@ -338,6 +339,29 @@ object UsbPttAdapter {
             "CM108 opened ${dev.deviceName} hid_iface=$ifaceId vid=0x${"%04X".format(dev.vendorId)} " +
                 "pid=0x${"%04X".format(dev.productId)}"
         )
+    }
+
+    /**
+     * Dispatcher entry point called by the Rust modem via JNI on every PTT
+     * actuation. Selects the transport by spec-Appendix-B method int and
+     * delegates to the existing setRts / setAiocRts / setHidGpio private
+     * helpers. VOX is a no-op (returns true; the audio path drives PTT).
+     *
+     * Returns true on success, false on dispatcher failure (no open transport,
+     * unknown method int, or underlying transport returned false). The Rust
+     * side propagates false as Err back into the TX governor.
+     */
+    override fun pttSet(method: Int, keyed: Boolean): Boolean {
+        return when (method) {
+            PttMethodConsts.PTT_METHOD_CP2102N_RTS -> setRts(keyed)
+            PttMethodConsts.PTT_METHOD_AIOC_CDC_DTR -> setAiocRts(keyed)
+            PttMethodConsts.PTT_METHOD_CM108_HID -> setHidGpio(keyed)
+            PttMethodConsts.PTT_METHOD_VOX -> true
+            else -> {
+                Log.w(TAG, "pttSet unknown method=$method")
+                false
+            }
+        }
     }
 
     /** Transport-keyed (not vendor-keyed) so the CM108 HID path can fan out
