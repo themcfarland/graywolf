@@ -17,6 +17,7 @@ import com.hoho.android.usbserial.driver.Cp21xxSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.nw5w.graywolf.jni.UsbPttCallback
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -88,6 +89,11 @@ object UsbPttAdapter : UsbPttCallback {
     internal val cm108Lock = Any()
     internal val aiocLock = Any()
 
+    // One-shot grant/deny callbacks registered by requestPermissionFor().
+    // Key = deviceName; entry consumed on first broadcast delivery.
+    private val pendingPermissionCallbacks =
+        java.util.concurrent.ConcurrentHashMap<String, (Boolean) -> Unit>()
+
     private val permissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
             if (intent.action != ACTION_USB_PERMISSION) return
@@ -104,6 +110,7 @@ object UsbPttAdapter : UsbPttCallback {
             }
             Log.i(TAG, "permission result device=${device.deviceName} granted=$granted")
             if (granted) tryOpen(device)
+            pendingPermissionCallbacks.remove(device.deviceName)?.invoke(granted)
         }
     }
 
@@ -581,6 +588,57 @@ object UsbPttAdapter : UsbPttCallback {
         put("cp2102n_found", foundCp)
         put("cm108_found", foundCm)
         put("aioc_found", foundAioc)
+    }
+
+    /**
+     * Snapshot of attached USB devices in JSON-array form for the WebView
+     * channel-config UI. Each entry has vid/pid (hex strings), device name,
+     * classified role, and current OS permission state.
+     *
+     * Different from status(): status() reports open-handle slots; this
+     * reports the raw attached-device list regardless of role or handle state.
+     */
+    fun enumerateForJs(): JSONArray {
+        check(this::appContext.isInitialized) { "init(context) must be called first" }
+        val out = JSONArray()
+        for ((_, dev) in usbManager.deviceList) {
+            val role = classify(dev)
+            out.put(JSONObject().apply {
+                put("vid", "0x%04X".format(dev.vendorId))
+                put("pid", "0x%04X".format(dev.productId))
+                put("name", dev.productName ?: dev.deviceName)
+                put("role", role.name)
+                put("permission_granted", usbManager.hasPermission(dev))
+            })
+        }
+        return out
+    }
+
+    /**
+     * Request runtime permission for the first attached device matching
+     * (vid, pid). Fires [onResult] exactly once: immediately with `false`
+     * if no matching device is attached; immediately with `true` if
+     * permission is already granted (and triggers tryOpen); otherwise
+     * asynchronously when the system permission broadcast lands.
+     */
+    fun requestPermissionFor(vid: Int, pid: Int, onResult: (Boolean) -> Unit) {
+        check(this::appContext.isInitialized) { "init(context) must be called first" }
+        val device = usbManager.deviceList.values
+            .firstOrNull { it.vendorId == vid && it.productId == pid }
+        if (device == null) {
+            Log.w(TAG, "requestPermissionFor: no device vid=$vid pid=$pid attached")
+            onResult(false)
+            return
+        }
+        if (usbManager.hasPermission(device)) {
+            // Already granted; open the device and notify the caller.
+            tryOpen(device)
+            onResult(true)
+            return
+        }
+        // Register one-shot callback consumed by permissionReceiver on broadcast.
+        pendingPermissionCallbacks[device.deviceName] = onResult
+        requestPermission(device)
     }
 
     enum class DeviceRole { CP2102N, CM108, AIOC, UNKNOWN }

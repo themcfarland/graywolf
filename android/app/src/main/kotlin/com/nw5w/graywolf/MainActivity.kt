@@ -46,7 +46,10 @@ class MainActivity : Activity() {
             it.isLongClickable = false
             it.setOnLongClickListener { true }
             it.addJavascriptInterface(
-                WebAppInterface { (application as GraywolfApp).bearerToken },
+                WebAppInterface(
+                    tokenProvider = { (application as GraywolfApp).bearerToken },
+                    webView = it,
+                ),
                 "GraywolfWebInterface",
             )
             it.webViewClient = object : WebViewClient() {
