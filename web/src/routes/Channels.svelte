@@ -1,8 +1,9 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { Button, Input, Select, Badge, Toggle, AlertDialog } from '@chrissnell/chonky-ui';
-  import { api, ApiError } from '../lib/api.js';
+  import { api, ApiError, postChannelPtt } from '../lib/api.js';
   import { toasts } from '../lib/stores.js';
+  import { Platform } from '../lib/platform.js';
   import PageHeader from '../components/PageHeader.svelte';
   import Modal from '../components/Modal.svelte';
   import FormField from '../components/FormField.svelte';
@@ -109,9 +110,177 @@
     tx_delay_ms: '300', tx_tail_ms: '100', slot_ms: '100', persist: '63', full_dup: false,
   };
 
+  // Android PTT method constants — must match PTT_METHOD_* in ptt_android.rs
+  // and the Kotlin UsbPttAdapter dispatcher (Appendix B of the 4b spec).
+  const PTT_METHOD_CP2102N_RTS = 1;
+  const PTT_METHOD_CM108_HID   = 2;
+  const PTT_METHOD_AIOC_CDC_DTR = 3;
+  const PTT_METHOD_VOX          = 4;
+
+  const androidPttOptions = [
+    { value: PTT_METHOD_CP2102N_RTS,  label: 'CP2102N RTS (Digirig)' },
+    { value: PTT_METHOD_AIOC_CDC_DTR, label: 'CDC-ACM DTR (AIOC)' },
+    { value: PTT_METHOD_CM108_HID,    label: 'CM108 HID' },
+    { value: PTT_METHOD_VOX,          label: 'VOX (no PTT wire)' },
+  ];
+
+  // USB role strings returned by GraywolfWebInterface.listUsbDevices()
+  // keyed by PTT method int.
+  const PTT_METHOD_USB_ROLE = {
+    [PTT_METHOD_CP2102N_RTS]:  'CP2102N',
+    [PTT_METHOD_AIOC_CDC_DTR]: 'AIOC',
+    [PTT_METHOD_CM108_HID]:    'CM108',
+  };
+
+  // Android PTT form state (only used when Platform.kind === 'android')
+  let androidPttMethod = $state(PTT_METHOD_CP2102N_RTS);
+  let pttHeld = $state(false);
+  let pttBusy = $state(false);
+  let pttHeartbeatInterval = null;
+
+  // USB hardware status state
+  let usbDevice = $state(null);
+  let usbStatusLoading = $state(false);
+  let usbPollInterval = null;
+
+  // Cleans up PTT hold state (called on release, cancel, unmount).
+  function clearPttHold() {
+    if (pttHeartbeatInterval !== null) {
+      clearInterval(pttHeartbeatInterval);
+      pttHeartbeatInterval = null;
+    }
+    pttHeld = false;
+  }
+
+  async function startTestPtt() {
+    if (pttBusy || !editing?.id) return;
+    pttHeld = true;
+    pttBusy = true;
+    try {
+      await postChannelPtt(editing.id, true);
+    } catch (err) {
+      console.error('Test PTT key failed:', err);
+      clearPttHold();
+      pttBusy = false;
+      return;
+    }
+    // Heartbeat: re-send keyed=true every 2s to keep Go-side watchdog alive.
+    pttHeartbeatInterval = setInterval(async () => {
+      try {
+        await postChannelPtt(editing.id, true);
+      } catch (err) {
+        console.error('Test PTT heartbeat failed:', err);
+        clearPttHold();
+        pttBusy = false;
+      }
+    }, 2000);
+    pttBusy = false;
+  }
+
+  async function stopTestPtt() {
+    if (!pttHeld) return;
+    clearPttHold();
+    pttBusy = true;
+    try {
+      await postChannelPtt(editing.id, false);
+    } catch (err) {
+      console.error('Test PTT unkey failed:', err);
+    } finally {
+      pttBusy = false;
+    }
+  }
+
+  // Poll USB device status via the Android JS bridge.
+  function startUsbPoll() {
+    if (usbPollInterval !== null) return;
+    usbStatusLoading = true;
+    const poll = () => {
+      try {
+        const raw = globalThis.GraywolfWebInterface?.listUsbDevices?.();
+        const devices = raw ? JSON.parse(raw) : [];
+        const role = PTT_METHOD_USB_ROLE[androidPttMethod];
+        usbDevice = role ? (devices.find(d => d.role === role) || null) : null;
+      } catch {
+        usbDevice = null;
+      }
+      usbStatusLoading = false;
+    };
+    poll();
+    usbPollInterval = setInterval(poll, 2000);
+  }
+
+  function stopUsbPoll() {
+    if (usbPollInterval !== null) {
+      clearInterval(usbPollInterval);
+      usbPollInterval = null;
+    }
+    usbDevice = null;
+    usbStatusLoading = false;
+  }
+
+  // Request USB permission via the Android JS bridge.
+  // Registers a per-call callback on window.__usbResult so the Kotlin
+  // side can fire it via evaluateJavascript("__usbResult(id, granted)").
+  function requestGrant() {
+    if (!usbDevice) return;
+    const callbackId = Math.random().toString(36).slice(2);
+    // __usbResult is the global dispatcher Kotlin evaluateJavascript calls.
+    if (!globalThis.__usbResult) {
+      globalThis.__usbResult = (id, granted) => {
+        const cb = globalThis.__usbCallbacks?.[id];
+        if (cb) cb(granted);
+        delete globalThis.__usbCallbacks?.[id];
+      };
+      globalThis.__usbCallbacks = {};
+    }
+    globalThis.__usbCallbacks[callbackId] = (granted) => {
+      if (granted) {
+        usbStatusLoading = true;
+        // Re-poll immediately to refresh permission state.
+        try {
+          const raw = globalThis.GraywolfWebInterface?.listUsbDevices?.();
+          const devices = raw ? JSON.parse(raw) : [];
+          const role = PTT_METHOD_USB_ROLE[androidPttMethod];
+          usbDevice = role ? (devices.find(d => d.role === role) || null) : null;
+        } catch {
+          usbDevice = null;
+        }
+        usbStatusLoading = false;
+      }
+    };
+    try {
+      globalThis.GraywolfWebInterface?.requestUsbPermission?.(
+        usbDevice.vendor_id,
+        usbDevice.product_id,
+        callbackId,
+      );
+    } catch (err) {
+      console.error('requestUsbPermission failed:', err);
+    }
+  }
+
+  // When the edit modal opens for an Android channel, populate
+  // androidPttMethod from the stored ptt config if present.
+  function loadAndroidPttMethod(row) {
+    if (Platform.kind !== 'android') return;
+    // The ptt config is returned on the channel object as row.ptt.
+    // If method === 'android', gpio_pin carries the method int.
+    if (row.ptt?.method === 'android' && row.ptt?.gpio_pin) {
+      androidPttMethod = row.ptt.gpio_pin;
+    } else {
+      androidPttMethod = PTT_METHOD_CP2102N_RTS;
+    }
+    startUsbPoll();
+  }
+
   onMount(async () => {
     startChannelsStore();
     await Promise.all([loadChannels(), loadDevices(), loadTxTimings()]);
+  });
+
+  onDestroy(() => {
+    clearPttHold();
+    stopUsbPoll();
   });
 
   // Legacy name; delegates to the shared store so every caller gets
@@ -143,6 +312,8 @@
 
   function openCreate() {
     editing = null;
+    stopUsbPoll();
+    clearPttHold();
     const defaultInput = inputDevices.length > 0 ? String(inputDevices[0].id) : '0';
     form = {
       name: '',
@@ -154,11 +325,17 @@
       ...txTimingDefaults,
     };
     errors = {};
+    if (Platform.kind === 'android') {
+      androidPttMethod = PTT_METHOD_CP2102N_RTS;
+      startUsbPoll();
+    }
     modalOpen = true;
   }
 
   async function openEdit(row) {
     editing = row;
+    stopUsbPoll();
+    clearPttHold();
     const timing = txTimings[row.id] || {};
     // Phase 2: input_device_id is nullable on the wire. Null means
     // KISS-TNC-only; any non-null value means modem-backed. The
@@ -183,6 +360,7 @@
       full_dup: timing.full_dup ?? false,
     };
     errors = {};
+    loadAndroidPttMethod(row);
     modalOpen = true;
   }
 
@@ -274,7 +452,23 @@
         await api.put(`/tx-timing/${channelId}`, timingData);
       }
 
+      // On Android, persist the PTT method via POST /api/ptt.
+      // Data shape: method='android', gpio_pin=method_int (1–4 per Appendix B).
+      // The Go modembridge reads gpio_pin to determine which USB transport
+      // to invoke in UsbPttAdapter (T7). This reuses the existing PttConfig
+      // row's gpio_pin field as a method-int carrier rather than adding a
+      // new schema column — the semantics are different from the desktop
+      // gpio-line use but the field is otherwise unused on Android channels.
+      if (Platform.kind === 'android' && channelId) {
+        await api.post('/ptt', {
+          channel_id: channelId,
+          method: 'android',
+          gpio_pin: androidPttMethod,
+        });
+      }
+
       modalOpen = false;
+      stopUsbPoll();
       await Promise.all([loadChannels(), loadTxTimings()]);
     } catch (err) {
       // Phase 3 -- PUT 409 with referrers means the mutation would
@@ -596,6 +790,59 @@
     {/if}
   </div>
 
+  {#if Platform.kind === 'android' && isModemType}
+    <!-- Android PTT section: method picker, Test PTT toggle, USB status,
+         audio routing. Gated on platform at runtime — desktop is unaffected. -->
+    <div class="android-ptt-section">
+      <h4 class="section-label">PTT (Android)</h4>
+      <div class="android-ptt-row">
+        <FormField label="PTT method" id="ch-android-ptt">
+          <Select
+            id="ch-android-ptt"
+            bind:value={androidPttMethod}
+            options={androidPttOptions}
+          />
+        </FormField>
+        <button
+          type="button"
+          class="test-ptt-btn"
+          class:ptt-held={pttHeld}
+          on:pointerdown={startTestPtt}
+          on:pointerup={stopTestPtt}
+          on:pointercancel={stopTestPtt}
+          on:pointerleave={stopTestPtt}
+          disabled={!editing?.id || pttBusy}
+          aria-label={pttHeld ? 'PTT keyed — release to unkey' : 'Press and hold to key transmitter'}
+        >
+          {pttHeld ? 'KEYED' : '⚡ Test PTT'}
+        </button>
+      </div>
+
+      <div class="usb-status">
+        <span class="usb-status-label">USB hardware:</span>
+        {#if usbStatusLoading}
+          <span class="usb-status-value">…</span>
+        {:else if usbDevice}
+          <span class="usb-status-value">
+            {usbDevice.name}
+            ({usbDevice.permission_granted ? 'Granted ✓' : 'Not granted'})
+          </span>
+          {#if !usbDevice.permission_granted}
+            <button type="button" class="grant-btn" on:click={requestGrant}>Grant access</button>
+          {/if}
+        {:else}
+          <span class="usb-status-value usb-none">none detected</span>
+        {/if}
+      </div>
+
+      <div class="audio-routing">
+        <span class="usb-status-label">Audio routing:</span>
+        <!-- TODO: future ticket to pull from a status endpoint once available -->
+        <span class="usb-status-value">USB audio (auto)</span>
+      </div>
+    </div>
+  {/if}
+
   <FormField
     label="Mode"
     hint="APRS only: beacon, digipeater, iGate, and messages may transmit. Packet only: AX.25 connected-mode terminal sessions only; APRS subsystems are blocked. APRS + Packet: both, on a shared channel."
@@ -676,7 +923,7 @@
   {/if}
 
   <div class="modal-actions">
-    <Button onclick={() => modalOpen = false}>Cancel</Button>
+    <Button onclick={() => { clearPttHold(); stopUsbPoll(); modalOpen = false; }}>Cancel</Button>
     <Button variant="primary" onclick={handleSave}>{editing ? 'Save' : 'Create'}</Button>
   </div>
 </Modal>
@@ -970,6 +1217,71 @@
     margin: 0 0 6px 0;
     font-size: 15px;
     font-weight: 600;
+  }
+
+  /* Android PTT section */
+  .android-ptt-section {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-color);
+  }
+  .android-ptt-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .android-ptt-row :global(.form-field) {
+    flex: 1;
+    min-width: 180px;
+  }
+  .test-ptt-btn {
+    padding: 8px 14px;
+    border: 2px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-surface, #fff);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    margin-bottom: 1px; /* align with Select baseline */
+    touch-action: none; /* prevent scroll on pointer hold */
+  }
+  .test-ptt-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .test-ptt-btn.ptt-held {
+    border-color: #e53e3e;
+    color: #e53e3e;
+    background: #fff5f5;
+  }
+  .usb-status,
+  .audio-routing {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    font-size: 13px;
+  }
+  .usb-status-label {
+    font-weight: 600;
+    color: var(--text-secondary, #555);
+  }
+  .usb-status-value {
+    color: var(--text-primary, #111);
+  }
+  .usb-none {
+    color: var(--text-secondary, #888);
+    font-style: italic;
+  }
+  .grant-btn {
+    padding: 2px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: transparent;
+    font-size: 12px;
+    cursor: pointer;
   }
 
   .modal-actions {

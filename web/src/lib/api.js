@@ -228,5 +228,16 @@ function getMockData(method, path, body) {
   if (path === '/simulation' && method === 'GET') return delay(mockSimulation);
   if (path === '/simulation' && method === 'PUT') return delay(body);
 
+  // Manual PTT (Android test toggle)
+  if (path.match(/^\/channels\/\d+\/ptt$/) && method === 'POST') return delay(null);
+
   return delay(null);
+}
+
+// postChannelPtt sends a manual PTT key/unkey to POST /api/channels/{id}/ptt.
+// Used by the Android Test PTT press-and-hold toggle and its 2-second
+// heartbeat. keyed=true keys the radio; keyed=false unkeys it. The Go-side
+// watchdog auto-unkeys after 10 s of no heartbeat.
+export async function postChannelPtt(channelId, keyed) {
+  await request('POST', `/channels/${channelId}/ptt`, { keyed });
 }
