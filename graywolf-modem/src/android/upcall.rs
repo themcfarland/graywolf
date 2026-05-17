@@ -15,7 +15,7 @@
 mod android_impl {
     use std::sync::{Mutex, OnceLock};
 
-    use jni::objects::{GlobalRef, JMethodID, JObject, JShortArray, JValue};
+    use jni::objects::{GlobalRef, JMethodID, JObject, JShortArray};
     use jni::JavaVM;
     use log::error;
 
@@ -124,7 +124,7 @@ mod android_impl {
             .as_ref()
             .ok_or_else(|| "no PTT callback installed".to_string())?;
 
-        let keyed_jni = jni::sys::JNI_TRUE.min(1) * keyed as u8;
+        let keyed_jni: jni::sys::jboolean = keyed as u8;
 
         // SAFETY: method ID was resolved against the same object class at
         // install time; GlobalRef keeps the object alive.
@@ -135,7 +135,7 @@ mod android_impl {
                 jni::signature::ReturnType::Primitive(jni::signature::Primitive::Boolean),
                 &[
                     jni::sys::jvalue { i: method },
-                    jni::sys::jvalue { z: keyed_jni as u8 },
+                    jni::sys::jvalue { z: keyed_jni },
                 ],
             )
         }
@@ -282,10 +282,12 @@ pub use stub_impl::{clear_mocks, install_audio_tx_mock, install_ptt_mock};
 mod tests {
     use super::stub_impl::{clear_mocks, install_audio_tx_mock, install_ptt_mock};
     use super::{jni_ptt_set, jni_tx_push_samples};
+    use serial_test::serial;
 
     // --- PTT tests -----------------------------------------------------------
 
     #[test]
+    #[serial]
     fn ptt_set_without_mock_returns_err() {
         clear_mocks();
         let err = jni_ptt_set(1, true).unwrap_err();
@@ -297,6 +299,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn ptt_set_with_mock_returning_true_returns_ok() {
         clear_mocks();
         use std::sync::{Arc, Mutex};
@@ -312,6 +315,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn ptt_set_with_mock_returning_false_returns_err_with_returned_false() {
         clear_mocks();
         install_ptt_mock(|_, _| false);
@@ -326,6 +330,7 @@ mod tests {
     // --- AudioTx tests -------------------------------------------------------
 
     #[test]
+    #[serial]
     fn tx_push_without_mock_returns_err() {
         clear_mocks();
         let err = jni_tx_push_samples(&[1, 2, 3]).unwrap_err();
@@ -337,6 +342,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn tx_push_with_mock_receives_slice_content() {
         clear_mocks();
         use std::sync::{Arc, Mutex};
@@ -354,6 +360,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn tx_push_mock_return_value_flows_back_as_ok() {
         clear_mocks();
         install_audio_tx_mock(|_| 42);
@@ -363,6 +370,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn clear_mocks_resets_both_callbacks() {
         install_ptt_mock(|_, _| true);
         install_audio_tx_mock(|_| 0);

@@ -22,7 +22,6 @@ use crate::rxonly::feed_chunk;
 
 pub mod audio;
 pub mod config_state;
-#[cfg(any(target_os = "android", feature = "android-test-stub"))]
 pub mod upcall;
 
 const LOG_TAG: &str = "graywolfmodem";

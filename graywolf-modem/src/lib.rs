@@ -114,6 +114,18 @@ pub mod android;
 #[path = "android/upcall.rs"]
 pub mod android_upcall;
 
+// Unified cross-cfg re-exports so T3/T4 callers use `crate::jni_ptt_set`
+// and `crate::jni_tx_push_samples` unconditionally inside their own cfg blocks.
+#[cfg(target_os = "android")]
+pub(crate) use android::upcall::{jni_ptt_set, jni_tx_push_samples};
+#[cfg(all(not(target_os = "android"), feature = "android-test-stub"))]
+pub(crate) use android_upcall::{jni_ptt_set, jni_tx_push_samples};
+
+// Test-hook re-exports: single import path for T3/T4 unit tests.
+#[cfg(feature = "android-test-stub")]
+#[allow(unused_imports)]
+pub use android_upcall::{clear_mocks, install_audio_tx_mock, install_ptt_mock};
+
 /// Base semver string ("0.7.13"), injected at build time from the repo's
 /// VERSION file (via the GRAYWOLF_VERSION env var set by the Makefile / CI).
 pub const VERSION: &str = env!("GRAYWOLF_VERSION");
