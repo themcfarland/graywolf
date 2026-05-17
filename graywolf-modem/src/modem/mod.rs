@@ -5,6 +5,11 @@
 //! multiple demodulator types (AFSK, PSK, 9600).
 
 mod tx_worker;
+// Re-export so the android module can implement TxSink on AndroidTxSink
+// without exposing the private tx_worker module path externally. Only
+// needed when the android audio path is compiled in.
+#[cfg(any(target_os = "android", feature = "android-test-stub"))]
+pub(crate) use tx_worker::TxSink;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};

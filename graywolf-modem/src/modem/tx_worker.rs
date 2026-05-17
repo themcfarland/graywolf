@@ -85,7 +85,10 @@ enum TxMessage {
 /// the trait at the tx_worker layer (rather than on `AudioSink` itself)
 /// means tests exercise the exact production sequencing logic without
 /// ever constructing a cpal stream.
-pub(super) trait TxSink {
+///
+/// `pub(crate)` so the android module can provide `AndroidTxSink` on
+/// the Android target without the trait leaking to downstream crates.
+pub(crate) trait TxSink {
     fn submit(&self, samples: Vec<i16>) -> Result<usize, String>;
     fn drained_samples(&self) -> usize;
 }
@@ -300,55 +303,88 @@ fn process_job(
         }
     };
 
-    // Lazy-create the sink, holding the &mut returned by the Entry API
-    // so the rest of this function never has to look the sink up again.
+    // Android: audio is pre-routed to the USB OTG dongle by Kotlin's
+    // AudioTxPump (setPreferredDevice). cpal cannot reach the AudioTrack
+    // instance Kotlin holds, so skip the cpal sink entirely and push
+    // samples directly through the JNI upcall. The `sinks` /
+    // `pending_devices` maps are unused on this target.
+    #[cfg(target_os = "android")]
+    {
+        let _ = output_device_id;
+        let _ = sink_config;
+        let sink = crate::android::audio_tx::AndroidTxSink::new();
+        let outcome = drive_tx_cycle(driver.as_mut(), &sink, samples, sample_rate);
+        match outcome {
+            TxCycleOutcome::Done => {}
+            TxCycleOutcome::KeyFailed(e) => {
+                eprintln!("graywolf-modem: TransmitFrame: ptt_key: {}", e);
+            }
+            TxCycleOutcome::SubmitFailed(e) => {
+                // On Android a submit failure means the JNI upcall failed
+                // (AudioTrack error or JVM not attached). Log prominently
+                // but do not attempt sink rebuild — the Kotlin side manages
+                // AudioTrack lifetime independently.
+                eprintln!("graywolf-modem: TransmitFrame: sink submit (android): {}", e);
+            }
+            TxCycleOutcome::UnkeyFailed(e) => {
+                eprintln!("graywolf-modem: TransmitFrame: ptt_unkey: {}", e);
+            }
+        }
+        return;
+    }
+
+    // Non-Android: lazy-create a cpal AudioSink, holding the &mut from
+    // the Entry API so the rest of this function never looks it up again.
     //
     // Use a pre-resolved cpal Device if one was sent by PrepareOutput
     // (resolved before input streams opened). Falls back to runtime
     // enumeration if none is cached (error recovery path).
-    let sink = match sinks.entry(output_device_id) {
-        Entry::Occupied(e) => e.into_mut(),
-        Entry::Vacant(e) => {
-            let device = pending_devices.remove(&output_device_id);
-            match soundcard::spawn_output(sink_config, device) {
-                Ok(s) => {
-                    eprintln!(
-                        "graywolf-modem: TX sink opened for device_id={} at {} Hz",
-                        output_device_id, sample_rate
-                    );
-                    e.insert(s)
-                }
-                Err(err) => {
-                    eprintln!(
-                        "graywolf-modem: TransmitFrame: open output device_id={}: {}",
-                        output_device_id, err
-                    );
-                    return;
+    #[cfg(not(target_os = "android"))]
+    {
+        let sink = match sinks.entry(output_device_id) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => {
+                let device = pending_devices.remove(&output_device_id);
+                match soundcard::spawn_output(sink_config, device) {
+                    Ok(s) => {
+                        eprintln!(
+                            "graywolf-modem: TX sink opened for device_id={} at {} Hz",
+                            output_device_id, sample_rate
+                        );
+                        e.insert(s)
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "graywolf-modem: TransmitFrame: open output device_id={}: {}",
+                            output_device_id, err
+                        );
+                        return;
+                    }
                 }
             }
-        }
-    };
+        };
 
-    // Explicit reborrow so the &mut AudioSink becomes a &AudioSink
-    // that drive_tx_cycle can unsize to &dyn TxSink. NLL drops the
-    // reborrow after the call returns so the match arms below can
-    // mutate `sinks` again.
-    let outcome = drive_tx_cycle(driver.as_mut(), &*sink, samples, sample_rate);
-    match outcome {
-        TxCycleOutcome::Done => {}
-        TxCycleOutcome::KeyFailed(e) => {
-            eprintln!("graywolf-modem: TransmitFrame: ptt_key: {}", e);
-        }
-        TxCycleOutcome::SubmitFailed(e) => {
-            eprintln!("graywolf-modem: TransmitFrame: sink submit: {}", e);
-            // A submit error means the sink's background thread died
-            // (cpal stream build or play failed after spawn_output
-            // returned). Drop the corpse so the next TX gets a fresh
-            // attempt instead of bricking the device forever.
-            sinks.remove(&output_device_id);
-        }
-        TxCycleOutcome::UnkeyFailed(e) => {
-            eprintln!("graywolf-modem: TransmitFrame: ptt_unkey: {}", e);
+        // Explicit reborrow so the &mut AudioSink becomes a &AudioSink
+        // that drive_tx_cycle can unsize to &dyn TxSink. NLL drops the
+        // reborrow after the call returns so the match arms below can
+        // mutate `sinks` again.
+        let outcome = drive_tx_cycle(driver.as_mut(), &*sink, samples, sample_rate);
+        match outcome {
+            TxCycleOutcome::Done => {}
+            TxCycleOutcome::KeyFailed(e) => {
+                eprintln!("graywolf-modem: TransmitFrame: ptt_key: {}", e);
+            }
+            TxCycleOutcome::SubmitFailed(e) => {
+                eprintln!("graywolf-modem: TransmitFrame: sink submit: {}", e);
+                // A submit error means the sink's background thread died
+                // (cpal stream build or play failed after spawn_output
+                // returned). Drop the corpse so the next TX gets a fresh
+                // attempt instead of bricking the device forever.
+                sinks.remove(&output_device_id);
+            }
+            TxCycleOutcome::UnkeyFailed(e) => {
+                eprintln!("graywolf-modem: TransmitFrame: ptt_unkey: {}", e);
+            }
         }
     }
 }
