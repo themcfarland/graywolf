@@ -14,6 +14,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import androidx.core.content.ContextCompat
 import android.graphics.drawable.Icon
+import android.hardware.usb.UsbManager
 import android.net.ConnectivityManager
 import android.os.Build
 import android.os.IBinder
@@ -21,15 +22,18 @@ import android.util.Log
 import java.net.Inet6Address
 import com.nw5w.graywolf.BuildConfig
 import com.nw5w.graywolf.audio.AudioPump
+import com.nw5w.graywolf.audio.AudioTxPump
 import com.nw5w.graywolf.binaries.GoLauncher
 import com.nw5w.graywolf.binaries.Supervisor
 import com.nw5w.graywolf.gps.GpsAdapter
 import com.nw5w.graywolf.jni.ModemBridge
 import com.nw5w.graywolf.platformsvc.PlatformServer
+import com.nw5w.graywolf.usb.UsbPttAdapter
 import java.io.File
 
 class GraywolfService : Service() {
     private val audioPump = AudioPump()
+    private var audioTxPump: AudioTxPump? = null
     private var goLauncher: GoLauncher? = null
     private var platformServer: PlatformServer? = null
     private var gpsAdapter: GpsAdapter? = null
@@ -181,6 +185,20 @@ class GraywolfService : Service() {
             } else {
                 Log.i(TAG, "ACCESS_FINE_LOCATION denied; starting FGS without location type")
             }
+            // MEDIA_PLAYBACK pairs with no runtime perm; always safe to include.
+            fgsType = fgsType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            // Per spec §3.6 + Android 14: CONNECTED_DEVICE FGS type requires that
+            // at least one USB device has been granted permission at start time, or
+            // startForeground throws SecurityException. Probe with UsbManager
+            // directly (UsbPttAdapter isn't init'd yet at this point).
+            val usbManager = getSystemService(UsbManager::class.java)
+            val hasGrantedUsbDevice = usbManager?.deviceList?.values
+                ?.any { usbManager.hasPermission(it) } == true
+            if (hasGrantedUsbDevice) {
+                fgsType = fgsType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            } else {
+                Log.i(TAG, "no USB device permission yet; starting FGS without CONNECTED_DEVICE type")
+            }
             startForeground(NOTIF_ID, notif, fgsType)
         } else {
             startForeground(NOTIF_ID, notif)
@@ -192,6 +210,19 @@ class GraywolfService : Service() {
             "ERROR"
         }
         Log.i(TAG, "modem cdylib version=$v")
+
+        // Install JNI callbacks immediately after loadLibrary (modemVersion triggers it).
+        // Must precede bootModem so any TX/PTT activation the modem fires on boot
+        // finds a registered callback. T5/T6/T7 supply the implementations.
+        ModemBridge.installPttCallback(UsbPttAdapter)
+        val txPump = AudioTxPump(applicationContext)
+        audioTxPump = txPump
+        ModemBridge.installAudioTxCallback(txPump)
+
+        // Start TX audio + USB PTT adapter after FGS is active (spec §3.1).
+        txPump.start()
+        UsbPttAdapter.init(applicationContext)
+        UsbPttAdapter.enumerate()
 
         // Bring up the Go ↔ Kotlin platform contract before exec'ing the Go child.
         // Phase 2: Hello + GpsFix only; the Go child connects, handshakes, and
@@ -229,6 +260,9 @@ class GraywolfService : Service() {
         gpsAdapter = null
         goLauncher?.stop()
         audioPump.stop()
+        audioTxPump?.stop()
+        audioTxPump = null
+        UsbPttAdapter.closeAll()
         platformServer?.stop()
         ModemBridge.modemStop()
         try {
