@@ -333,6 +333,14 @@ impl Modem {
             Some(Payload::TransmitFrame(tf)) => {
                 self.handle_transmit_frame(tf);
             }
+            Some(Payload::ManualPtt(mp)) => {
+                if let Err(e) = self.tx_worker.manual_key(mp.channel, mp.keyed) {
+                    eprintln!(
+                        "graywolf-modem: ManualPtt channel={} keyed={}: {}",
+                        mp.channel, mp.keyed, e
+                    );
+                }
+            }
             Some(Payload::Shutdown(_)) => {
                 self.graceful_shutdown();
                 return true;

@@ -67,6 +67,12 @@ enum TxMessage {
     /// subsequent reconfigure gets a fresh `spawn_output` on the new
     /// device instead of reusing a stale one.
     ReleaseSinks,
+    /// Key or unkey the PTT driver for a channel directly, without
+    /// transmitting audio. Used by the manual-PTT REST path for testing.
+    ManualKey {
+        channel: u32,
+        keyed: bool,
+    },
     /// Test-only synchronous query: reply with the number of PTT
     /// drivers currently registered. Because mpsc is FIFO, a successful
     /// reply also proves every earlier message has already been
@@ -174,6 +180,15 @@ impl TxWorker {
         let _ = self.sender.send(TxMessage::ReleaseSinks);
     }
 
+    /// Directly key or unkey the PTT driver for a channel without transmitting
+    /// audio. Used by the manual-PTT REST path. Returns an error only if the
+    /// worker thread channel is broken (worker has exited).
+    pub fn manual_key(&self, channel: u32, keyed: bool) -> Result<(), String> {
+        self.sender
+            .send(TxMessage::ManualKey { channel, keyed })
+            .map_err(|e| format!("tx worker manual_key: {}", e))
+    }
+
     /// Synchronously query the number of PTT drivers the worker thread
     /// currently owns. Used by unit tests to verify that a preceding
     /// `RegisterDriver` / `ReleaseDriver` has been processed. Because
@@ -221,6 +236,29 @@ fn worker_loop(rx: std::sync::mpsc::Receiver<TxMessage>, stop: Arc<AtomicBool>) 
             Ok(TxMessage::ReleaseSinks) => {
                 sinks.clear();
                 pending_devices.clear();
+            }
+            Ok(TxMessage::ManualKey { channel, keyed }) => {
+                match drivers.get_mut(&channel) {
+                    Some(driver) => {
+                        let result = if keyed { driver.key() } else { driver.unkey() };
+                        match result {
+                            Ok(()) => eprintln!(
+                                "graywolf-modem: ManualKey channel={} keyed={}: ok",
+                                channel, keyed
+                            ),
+                            Err(e) => eprintln!(
+                                "graywolf-modem: ManualKey channel={} keyed={}: {}",
+                                channel, keyed, e
+                            ),
+                        }
+                    }
+                    None => {
+                        eprintln!(
+                            "graywolf-modem: ManualKey channel={} no driver registered",
+                            channel
+                        );
+                    }
+                }
             }
             #[cfg(test)]
             Ok(TxMessage::QueryDriverCount(reply)) => {
@@ -576,6 +614,40 @@ mod tests {
         assert!(
             sink_log.lock().unwrap().is_empty(),
             "submit must NOT run when key failed"
+        );
+    }
+
+    /// Verify that `manual_key` sends a `ManualKey` message that the worker
+    /// dispatches to the registered PTT driver. After `manual_key(ch, true)`,
+    /// the mock's log must contain exactly one Key call; after
+    /// `manual_key(ch, false)`, exactly one Unkey call follows.
+    #[test]
+    fn manual_key_routes_to_registered_driver() {
+        let worker = TxWorker::spawn().expect("worker spawns");
+
+        let mock = MockPtt::default();
+        let ptt_log = mock.log.clone();
+
+        worker
+            .register_driver(1, Box::new(mock))
+            .expect("register ok");
+
+        // Use driver_count() as a synchronization barrier: it guarantees
+        // the preceding RegisterDriver message has been processed before
+        // we send ManualKey.
+        assert_eq!(worker.driver_count(), 1);
+
+        worker.manual_key(1, true).expect("manual_key ok");
+        worker.manual_key(1, false).expect("manual_key ok");
+
+        // QueryDriverCount is FIFO-ordered, so by the time it returns,
+        // both ManualKey messages have already been processed.
+        let _ = worker.driver_count();
+
+        assert_eq!(
+            *ptt_log.lock().unwrap(),
+            vec![PttCall::Key, PttCall::Unkey],
+            "manual_key(true) then manual_key(false) should produce Key then Unkey"
         );
     }
 }
