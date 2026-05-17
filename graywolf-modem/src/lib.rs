@@ -107,12 +107,15 @@ pub mod list_usb;
 pub mod rxonly;
 #[cfg(target_os = "android")]
 pub mod android;
-// On the host with android-test-stub, the android/ mod.rs is not compiled
-// (jni crate is android-only), but upcall.rs is self-contained and only
-// needs std. Pull it in directly so stub-mode unit tests are reachable.
+// On the host with android-test-stub, android/mod.rs is not compiled
+// (jni crate is android-only), but upcall.rs and audio_tx.rs are self-contained
+// and only need std. Pull them in directly so stub-mode unit tests are reachable.
 #[cfg(all(feature = "android-test-stub", not(target_os = "android")))]
 #[path = "android/upcall.rs"]
 pub mod android_upcall;
+#[cfg(all(feature = "android-test-stub", not(target_os = "android")))]
+#[path = "android/audio_tx.rs"]
+pub mod android_audio_tx;
 
 // Unified cross-cfg re-exports so T3/T4 callers use `crate::jni_ptt_set`
 // and `crate::jni_tx_push_samples` unconditionally inside their own cfg blocks.
@@ -123,7 +126,6 @@ pub(crate) use android_upcall::{jni_ptt_set, jni_tx_push_samples};
 
 // Test-hook re-exports: single import path for T3/T4 unit tests.
 #[cfg(feature = "android-test-stub")]
-#[allow(unused_imports)]
 pub use android_upcall::{clear_mocks, install_audio_tx_mock, install_ptt_mock};
 
 /// Base semver string ("0.7.13"), injected at build time from the repo's

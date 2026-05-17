@@ -205,7 +205,6 @@ mod android_impl {
 // ── Host stub (android-test-stub feature) ────────────────────────────────────
 
 #[cfg(feature = "android-test-stub")]
-#[allow(dead_code)] // jni_tx_push_samples called by T4 (pending)
 mod stub_impl {
     use std::sync::Mutex;
 
@@ -264,11 +263,7 @@ mod stub_impl {
 #[cfg(all(target_os = "android", not(feature = "android-test-stub")))]
 pub(crate) use android_impl::{install_audio_tx, install_ptt, jni_ptt_set, jni_tx_push_samples};
 
-// These helpers are pub(crate) so other tasks can call them. jni_ptt_set is
-// used by T3, but jni_tx_push_samples awaits a caller (T4 pending), so suppress
-// the dead_code warning.
 #[cfg(feature = "android-test-stub")]
-#[allow(dead_code)]
 pub(crate) use stub_impl::{jni_ptt_set, jni_tx_push_samples};
 #[cfg(feature = "android-test-stub")]
 pub use stub_impl::{clear_mocks, install_audio_tx_mock, install_ptt_mock};

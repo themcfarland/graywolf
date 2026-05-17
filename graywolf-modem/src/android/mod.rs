@@ -21,6 +21,7 @@ use crate::ipc::server::{IpcInbound, IpcServer};
 use crate::rxonly::feed_chunk;
 
 pub mod audio;
+pub mod audio_tx;
 pub mod config_state;
 pub mod upcall;
 
