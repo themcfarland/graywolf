@@ -201,9 +201,8 @@
 </AlertDialog>
 
 <style>
-  /* Referrer list — duplicated from Channels.svelte because Svelte scopes
-     <style> per component. The PUT-confirm flow (still in parent) also uses
-     these classes, so they remain in Channels.svelte too. */
+  /* Referrer list — scoped copy; Svelte styles are per-component.
+     ChannelPutConfirm.svelte carries its own copy for the same reason. */
   .referrer-groups {
     margin: 12px 1.5rem 0 1.5rem;
     padding: 10px 12px;
@@ -225,8 +224,7 @@
     color: var(--text-secondary);
   }
 
-  /* modal-footer duplicated: used by both delete stages here and by the
-     PUT-confirm dialog still in the parent. */
+  /* modal-footer: used by both delete stages here. */
   .modal-footer {
     display: flex;
     gap: 8px;
@@ -234,9 +232,9 @@
     padding: 1.25rem 1.5rem 1.5rem;
   }
 
-  /* :global(.danger-action) stays in Channels.svelte (global rules are not
-     component-scoped; the parent's global covers both this component and
-     the put-confirm dialog). */
+  /* :global(.danger-action) is declared in ChannelPutConfirm.svelte; being
+     :global it is document-wide and reaches this component's
+     AlertDialog.Action slot too. */
 
   /* :global(.secondary-action) — used only by the delete impact stage here;
      moved out of Channels.svelte (no remaining use in parent). Declared

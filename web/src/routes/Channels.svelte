@@ -1,15 +1,15 @@
 <script>
   import { onMount } from 'svelte';
-  import { Button, AlertDialog } from '@chrissnell/chonky-ui';
+  import { Button } from '@chrissnell/chonky-ui';
   import { api, ApiError } from '../lib/api.js';
   import { toasts } from '../lib/stores.js';
   import { Platform } from '../lib/platform.js';
   import PageHeader from '../components/PageHeader.svelte';
   import { channelsStore, start as startChannelsStore, invalidate as refreshChannels } from '../lib/stores/channels.svelte.js';
-  import { groupReferrers, totalReferrers } from '../lib/channelReferrers.js';
   import ChannelRow from './channels/ChannelRow.svelte';
   import ChannelEditModal from './channels/ChannelEditModal.svelte';
   import ChannelDeleteFlow from './channels/ChannelDeleteFlow.svelte';
+  import ChannelPutConfirm from './channels/ChannelPutConfirm.svelte';
 
   // The Channels page itself hydrates the shared store: this page is
   // the cheapest place for a first-visit operator to land, so it
@@ -39,11 +39,8 @@
   let putPendingPayload = $state(null);
   let putPendingId = $state(null);
   let putServerError = $state('');
-  let putInFlight = $state(false);
   // Captured tx/ptt context from the 409 save attempt; re-used on force retry.
   let putPendingContext = $state(null);
-  let putGroups = $derived(groupReferrers(putReferrers));
-  let putTotal = $derived(totalReferrers(putReferrers));
 
   onMount(async () => {
     startChannelsStore();
@@ -168,7 +165,6 @@
   async function confirmForcePut() {
     if (!putPendingPayload || !putPendingId) return;
     const data = putPendingPayload;
-    putInFlight = true;
     try {
       // editing can get cleared by other code paths; re-affirm it
       // from the id we captured when the 409 landed so the retry
@@ -180,7 +176,6 @@
       const ctx = putPendingContext || {};
       await persistSave(data, { force: true, ...ctx });
     } finally {
-      putInFlight = false;
       putConfirmOpen = false;
       putReferrers = [];
       putPendingPayload = null;
@@ -253,48 +248,14 @@
   onDeleted={async () => { await Promise.all([loadChannels(), loadTxTimings()]); }}
 />
 
-<!-- Phase 3 -- channel PUT 409 "force" confirmation. Mirrors the
-     stage-1 delete impact dialog above (same AlertDialog shape, same
-     groupReferrers() rendering) but the Action retries the PUT with
-     ?force=true instead of cascading a delete. No typed-name gate:
-     a broken-referrer PUT is recoverable by editing again. -->
-<AlertDialog bind:open={putConfirmOpen}>
-  <AlertDialog.Content>
-    <AlertDialog.Title>Update channel and break references?</AlertDialog.Title>
-    <AlertDialog.Description>
-      This channel update would break the following active config.
-      {#if putServerError}
-        <span class="put-error-reason">Reason: {putServerError}</span>
-      {/if}
-    </AlertDialog.Description>
-    <ul class="referrer-groups">
-      {#each putGroups as g (g.type)}
-        <li>
-          <strong>{g.items.length} {g.label}</strong>{#if g.items.some((i) => i.name)}:
-            <span class="referrer-items">
-              {#each g.items as item, idx (item.id)}{idx > 0 ? ', ' : ''}{item.name || `#${item.id}`}{/each}
-            </span>
-          {/if}
-        </li>
-      {/each}
-    </ul>
-    <p class="put-force-note">
-      Saving will apply the change anyway. The referrers listed above
-      will remain in the database but may fail to transmit until you
-      fix them on their respective pages.
-    </p>
-    <div class="modal-footer">
-      <AlertDialog.Cancel onclick={cancelForcePut}>Cancel</AlertDialog.Cancel>
-      <AlertDialog.Action
-        class="danger-action"
-        onclick={confirmForcePut}
-        disabled={putInFlight}
-      >
-        Save channel and break {putTotal} reference{putTotal === 1 ? '' : 's'}
-      </AlertDialog.Action>
-    </div>
-  </AlertDialog.Content>
-</AlertDialog>
+<!-- Phase 3 -- PUT 409 force-confirm dialog (extracted to ChannelPutConfirm). -->
+<ChannelPutConfirm
+  bind:open={putConfirmOpen}
+  referrers={putReferrers}
+  serverError={putServerError}
+  onConfirm={confirmForcePut}
+  onCancel={cancelForcePut}
+/>
 
 <style>
   .empty-state {
@@ -321,57 +282,6 @@
     gap: 12px;
   }
 
-  .modal-footer {
-    display: flex;
-    gap: 8px;
-    justify-content: flex-end;
-    padding: 1.25rem 1.5rem 1.5rem;
-  }
-  :global(.danger-action) {
-    background: var(--color-danger) !important;
-    color: white !important;
-  }
-
-  /* Referrer list — used by the PUT-confirm dialog (Phase 3) still in this
-     file; also duplicated in ChannelDeleteFlow.svelte for its delete dialogs
-     because Svelte scopes <style> per component. */
-  .referrer-groups {
-    margin: 12px 1.5rem 0 1.5rem;
-    padding: 10px 12px;
-    background: var(--bg-tertiary);
-    border-radius: var(--radius);
-    list-style: disc inside;
-    font-size: 13px;
-    color: var(--text-primary);
-    line-height: 1.6;
-  }
-  .referrer-groups li + li {
-    margin-top: 2px;
-  }
-  /* .referrer-action used only by delete impact stage — moved to ChannelDeleteFlow.svelte */
-  .referrer-items {
-    color: var(--text-secondary);
-  }
-
-  /* :global(.secondary-action) moved to ChannelDeleteFlow.svelte — no longer
-     used in this file (delete impact stage extracted). */
-
-  /* confirm-label / confirm-input moved to ChannelDeleteFlow.svelte. */
-
-  /* Phase 3 -- channel PUT 409 confirm dialog copy. Inline "Reason:"
-     clause reflects the server's concrete explanation (e.g. "no
-     output device configured") so the operator sees why the
-     mutation breaks referrers without guessing. */
-  .put-error-reason {
-    display: block;
-    margin-top: 6px;
-    font-size: 13px;
-    color: var(--color-danger, #f85149);
-  }
-  .put-force-note {
-    margin: 12px 1.5rem 0 1.5rem;
-    font-size: 13px;
-    color: var(--text-secondary);
-    line-height: 1.5;
-  }
+  /* .modal-footer, :global(.danger-action), .referrer-groups, .referrer-items,
+     .put-error-reason, .put-force-note moved to ChannelPutConfirm.svelte. */
 </style>
