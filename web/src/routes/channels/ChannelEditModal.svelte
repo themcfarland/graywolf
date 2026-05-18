@@ -42,8 +42,9 @@
   // Android PTT form state (only used when Platform.kind === 'android')
   let androidPttMethod = $state(PTT_METHOD_CP2102N_RTS);
   // Reference to the AndroidPttFields component instance for cleanup calls.
-  // Plain let: bind:this targets are imperative refs, not reactive state.
-  let androidPttComp = null;
+  // $state only to silence Svelte's non_reactive_update warning on the
+  // bind:this target; the ref is used imperatively, never read reactively.
+  let androidPttComp = $state(null);
 
   // Edge-triggered open: fire ONCE per closed→open transition, then
   // hold. All init inputs (editing, txTimings, inputDevices, Platform)
