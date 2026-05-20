@@ -536,18 +536,6 @@
     color: var(--text-muted);
     margin: -4px 0 10px;
   }
-  .field-hint {
-    font-size: 12px;
-    color: var(--text-muted);
-    margin: -6px 0 10px;
-  }
-  .field-hint code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 11px;
-    padding: 1px 4px;
-    background: var(--bg-secondary);
-    border-radius: 3px;
-  }
 
   .empty-state {
     text-align: center;
@@ -724,72 +712,8 @@
     overflow: hidden;
   }
 
-  .modal-actions {
-    display: flex;
-    gap: 8px;
-    justify-content: flex-end;
-    margin-top: 16px;
-  }
-  .modal-footer {
-    display: flex;
-    gap: 8px;
-    justify-content: flex-end;
-    padding: 1.25rem 1.5rem 1.5rem;
-  }
   :global(.danger-action) {
     background: var(--color-danger) !important;
     color: white !important;
-  }
-
-  /* rigctld Test Connection UI */
-  .rigctld-test-row {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 8px;
-  }
-  .rigctld-result {
-    min-height: 22px;
-    margin-bottom: 4px;
-  }
-  .rigctld-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 10px;
-    border-radius: 999px;
-    font-size: 12px;
-    font-weight: 500;
-    border: 1px solid transparent;
-  }
-  .rigctld-badge.testing {
-    color: var(--text-secondary);
-    background: var(--bg-secondary);
-    border-color: var(--border-color);
-  }
-  .rigctld-badge.ok {
-    --badge-c: var(--success, #3fb950);
-    color: var(--badge-c);
-    background: color-mix(in srgb, var(--badge-c) 12%, transparent);
-    border-color: color-mix(in srgb, var(--badge-c) 40%, transparent);
-  }
-  .rigctld-badge.err {
-    --badge-c: var(--color-danger, #f85149);
-    color: var(--badge-c);
-    background: color-mix(in srgb, var(--badge-c) 12%, transparent);
-    border-color: color-mix(in srgb, var(--badge-c) 40%, transparent);
-  }
-  .rigctld-spinner {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    border: 2px solid currentColor;
-    border-right-color: transparent;
-    display: inline-block;
-    animation: rigctld-spin 0.7s linear infinite;
-    vertical-align: -2px;
-    margin-right: 6px;
-  }
-  @keyframes rigctld-spin {
-    to { transform: rotate(360deg); }
   }
 </style>
