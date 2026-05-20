@@ -10,6 +10,12 @@
   import { key as methodKey } from './ptt/MethodPicker.svelte';
   import { DESKTOP_METHODS } from './ptt/devices/methodOptions.desktop.js';
   import { createDesktopDeviceSource } from './ptt/devices/desktopDeviceSource.js';
+  import {
+    modemBackedChannels as computeModemBacked,
+    channelsNeedingPtt as computeChannelsNeedingPtt,
+    showChannelSelector as computeShowChannelSelector,
+    showAddButton as computeShowAddButton,
+  } from './ptt/channelSelector.js';
 
   let items = $state([]);
   let channels = $state([]);
@@ -55,7 +61,14 @@
   // The backend rejects upserts targeting these channels with HTTP 400; the
   // filter here keeps them out of the dropdown so the rejection is never
   // reached in normal use.
-  let modemChannels = $derived(channels.filter(c => c.input_device_id != null));
+  let pttByChannel = $derived(new Map(items.map(p => [p.channel_id, p])));
+  let modemChannels = $derived(computeModemBacked(channels));
+  let channelsNeedingPttList = $derived(computeChannelsNeedingPtt(channels, pttByChannel));
+  let showChannelSelector = $derived(computeShowChannelSelector(channels, pttByChannel));
+  let showAddPttButton = $derived(computeShowAddButton(channels, pttByChannel));
+  let channelOptions = $derived(
+    modemChannels.map(c => ({ value: String(c.id), label: `${c.name} (ch ${c.id})` }))
+  );
 
   function channelName(id) {
     const c = channels.find(c => c.id === id);
@@ -124,11 +137,17 @@
       toasts.error('Create a channel first on the Channels page');
       return;
     }
-    if (modemChannels.length === 0) {
-      toasts.error('PTT only applies to modem-backed channels. KISS-TNC channels manage PTT in the TNC itself.');
+    if (channelsNeedingPttList.length === 0) {
+      toasts.error('Every modem-backed channel already has a PTT configuration.');
       return;
     }
-    dialogContext = { kind: 'add', channelId: modemChannels[0].id, item: null };
+    // When showChannelSelector is false, auto-pick the only candidate.
+    // When true, default to the first but Dialog B's Save-Add chain will
+    // surface the selector via a future enhancement; today the add flow
+    // already commits to the auto-picked channel. (Multi-channel selector
+    // UI ships with the channel-selector phase of i18n; out of scope here.)
+    const targetId = channelsNeedingPttList[0].id;
+    dialogContext = { kind: 'add', channelId: targetId, item: null };
     dialogMethodChosen = null;
     dialogMethodOpen = true;
   }
@@ -259,7 +278,9 @@
   <Button onclick={refreshAvailable} disabled={loadingAvail}>
     {loadingAvail ? 'Scanning...' : 'Detect Devices'}
   </Button>
-  <Button variant="primary" onclick={openAddPtt}>+ Add PTT</Button>
+  {#if showAddPttButton}
+    <Button variant="primary" onclick={openAddPtt}>+ Add PTT</Button>
+  {/if}
 </PageHeader>
 
 <!-- PTT readiness -->
@@ -279,8 +300,12 @@
 
 <!-- Configured PTT devices -->
 <div class="section-label">Configured PTT</div>
-{#if items.length === 0}
-  <div class="empty-state">No PTT configurations. Detect devices below or add one manually.</div>
+{#if modemChannels.length === 0}
+  <div class="empty-state">
+    No PTT-eligible channels. PTT applies to audio-modem channels — configure a modem-backed channel on the Channels page first.
+  </div>
+{:else if items.length === 0}
+  <div class="empty-state">No PTT configurations. Click + Add PTT to add one.</div>
 {:else}
   <div class="device-grid">
     {#each items as item}
