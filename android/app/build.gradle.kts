@@ -198,6 +198,28 @@ val goAbiMatrix = mapOf(
 // .so floor lines up with the AndroidManifest.
 val ndkCgoApi = 28
 
+// Build the SPA bundle (web/dist) via vite before goCrossCompile picks
+// it up for go:embed. web/dist is gitignored; without this task an APK
+// built from a clean checkout (or after web/src changes) silently ships
+// whatever the developer last vite-built. The login-screen-on-Android
+// regression triaged on 2026-05-21 was exactly that bug. Inputs cover
+// every file the SPA build reads; outputs are the dist directory.
+val webBuild by tasks.registering(Exec::class) {
+    group = "build"
+    description = "Build the SPA bundle (web/dist) via vite. Required before goCrossCompile."
+    workingDir = repoRoot.resolve("web")
+    inputs.dir(repoRoot.resolve("web/src"))
+    inputs.dir(repoRoot.resolve("web/themes"))
+    inputs.dir(repoRoot.resolve("web/public"))
+    inputs.file(repoRoot.resolve("web/index.html"))
+    inputs.file(repoRoot.resolve("web/package.json"))
+    inputs.file(repoRoot.resolve("web/package-lock.json"))
+    inputs.file(repoRoot.resolve("web/vite.config.js"))
+    inputs.file(repoRoot.resolve("web/svelte.config.js"))
+    outputs.dir(repoRoot.resolve("web/dist"))
+    commandLine = listOf("npx", "vite", "build")
+}
+
 val goCrossCompile by tasks.registering {
     group = "build"
     description = "Cross-compile cmd/graywolf to libgraywolf.so for each Android ABI."
@@ -206,6 +228,10 @@ val goCrossCompile by tasks.registering {
 goAbiMatrix.forEach { (abi, info) ->
     val taskName = "goCrossCompile_$abi"
     val task = tasks.register<Exec>(taskName) {
+        // Ensure web/dist is fresh before Go embeds it. Without this
+        // dependency, a developer who edits web/src/ but forgets to
+        // run vite build ships a stale SPA bundle inside libgraywolf.so.
+        dependsOn(webBuild)
         group = "build"
         workingDir = repoRoot
         environment("GOOS", "android")
