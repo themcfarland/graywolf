@@ -1344,6 +1344,12 @@ func (a *App) wireHTTP(ctx context.Context) error {
 	// responds 501 Not Implemented (see btsource_default.go).
 	apiSrv.SetBtSource(a.btSourceForWebapi())
 
+	// USB serial device source. Android returns a live adapter backed by
+	// the platformsvc client (see usbserialsource_android.go); desktop
+	// builds return nil so GET /api/kiss/available-usb-serial-devices
+	// responds 501 Not Implemented (see usbserialsource_default.go).
+	apiSrv.SetUsbSerialSource(a.usbSerialSourceForWebapi())
+
 	// PTT device source for the unified PTT tab. Android returns a
 	// live adapter backed by the platformsvc client (see
 	// pttsource_android.go) so GET /api/ptt/available enumerates
@@ -1881,6 +1887,30 @@ func (a *App) kissComponent() namedComponent {
 						Device:              ki.Device,
 						BaudRate:            0,
 						Mode:                kiss.ModeTnc,
+						ChannelMap:          map[uint8]uint32{0: ch},
+						ReconnectInitMs:     ki.ReconnectInitMs,
+						ReconnectMaxMs:      ki.ReconnectMaxMs,
+						Logger:              a.logger,
+						TncIngressRateHz:    ki.TncIngressRateHz,
+						TncIngressBurst:     ki.TncIngressBurst,
+						AllowTxFromGovernor: ki.AllowTxFromGovernor,
+						OnReload:            a.notifyTxBackendReload,
+						OpenFunc:            a.kissSerialOpenFunc(),
+					})
+					continue
+				case configstore.KissTypeUsbSerial:
+					// USB serial mirrors the host serial path: vid:pid lives
+					// in ki.Device, baud is required, mode is operator-chosen.
+					// kissSerialOpenFunc routes vid:pid strings to
+					// platformsvc.UsbSerialOpen on Android (nil elsewhere).
+					if ki.Device == "" || ki.BaudRate == 0 {
+						continue
+					}
+					a.kissMgr.StartSerial(ctx, ki.ID, kiss.SerialConfig{
+						Name:                name,
+						Device:              ki.Device,
+						BaudRate:            ki.BaudRate,
+						Mode:                mode,
 						ChannelMap:          map[uint8]uint32{0: ch},
 						ReconnectInitMs:     ki.ReconnectInitMs,
 						ReconnectMaxMs:      ki.ReconnectMaxMs,
