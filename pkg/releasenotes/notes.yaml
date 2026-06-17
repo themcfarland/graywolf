@@ -7,6 +7,39 @@
 # route the body references via [text](link) markdown; renderer only
 # accepts internal #/... routes.
 
+- version: "0.14.1"
+  date: "2026-06-17"
+  style: info
+  schema_version: 1
+  link: "#/map"
+  title: "Map popup actions, offline World map, and audio, GPS, and map fixes"
+  body: |
+    Station popups on the Live Map gain a row of quick actions for
+    stations you actually heard: Message opens a direct-message
+    thread, APRS logs jumps to the packet log already filtered to that
+    callsign, and QRZ opens the station's qrz.com page in a new tab.
+
+    The downloadable low-detail World map now shows up in the offline
+    maps download list, set apart from the country list, so you can
+    grab a global basemap for areas you have not downloaded in detail.
+
+    Audio: you can now enter ALSA devices in shorthand like hw:0,0 or
+    plughw:1 instead of the long canonical name, and the audio
+    handbook documents custom .asoundrc PCMs and a low-CPU 8 kHz
+    capture setup.
+
+    GPS over a serial port shares better with PTT: Graywolf no longer
+    takes an exclusive lock on the serial line, so shared-line PTT
+    keeps working after a reboot, and it leaves RTS/DTR deasserted
+    when opening the port so attaching GPS will not key your radio.
+
+    Smaller touches: better contrast for the map temperature chips,
+    including night mode; the Android app launches faster by booting
+    the backend in the background instead of blocking the splash
+    screen; a clearer scroll hint at the bottom of long settings
+    pages; and fixes for a rare crash when leaving the map and a
+    false "mixed build" warning at startup.
+
 - version: "0.14.0"
   date: "2026-06-15"
   style: info
