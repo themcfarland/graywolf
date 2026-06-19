@@ -121,7 +121,12 @@
     const n = parseInt(form.channel, 10);
     return lookupChannel(n);
   });
+  // APRS-IS-only beacons carry no RF leg, so the radio channel is
+  // irrelevant — the form hides the channel picker and skips the
+  // TX-capability gate entirely for them.
+  let needsChannel = $derived(form.send_path !== 'is_only');
   let txBlock = $derived.by(() => {
+    if (!needsChannel) return null;
     const c = selectedChannelObj;
     if (!c) return null;
     const cap = c.backing?.tx;
@@ -254,11 +259,14 @@
     }
     // Deep-link entry from the map context menu's "Add fixed beacon
     // here" item: open the create modal with pos_source=fixed and the
-    // clicked coordinates prefilled. Done after the channels store has
-    // been kicked above so openCreate() finds a default channel.
+    // clicked coordinates prefilled. Await the channels store's first
+    // load so openCreate() defaults the send path off a populated list
+    // (no channels => APRS-IS only; otherwise RF) instead of racing an
+    // empty list and wrongly preselecting APRS-IS only on an RF station.
     const { lat, lon } = parseLatLonFromHash();
     if (lat != null && lon != null) {
       clearLatLonFromHash();
+      await refreshChannels();
       openCreate();
       form.pos_source = 'fixed';
       form.latitude = String(lat);
@@ -267,14 +275,18 @@
   });
 
   function openCreate() {
-    if (channels.length === 0) {
-      toasts.error('Create a channel first on the Channels page');
-      return;
-    }
     editing = null;
     form.type = 'position';
     form.object_name = '';
-    form.channel = String(channels[0].id);
+    // A radioless (APRS-IS-only) station has no channels at all. Rather
+    // than block beacon creation, default to an APRS-IS-only beacon so
+    // the operator can get on the network with no RF setup; the channel
+    // picker stays hidden until they pick an RF send path.
+    if (channels.length === 0) {
+      form.channel = '';
+    } else {
+      form.channel = String(channels[0].id);
+    }
     form.callsign = '';
     form.callsign_override = false;
     callsignError = '';
@@ -294,7 +306,7 @@
     form.comment = defaultComment;
     form.interval = '600';
     form.slot = '';
-    form.send_path = 'rf';
+    form.send_path = channels.length === 0 ? 'is_only' : 'rf';
     form.enabled = true;
     modalOpen = true;
   }
@@ -355,8 +367,10 @@
     callsignError = '';
     let channelId = parseInt(form.channel);
     if (form.send_path === 'is_only') {
-      // APRS-IS-only beacon: no RF channel needed.
-      if (!Number.isFinite(channelId) || channelId <= 0) channelId = 0;
+      // APRS-IS-only beacon: no RF channel needed. Store 0 unconditionally
+      // so the value is unambiguous even when switching from an RF beacon
+      // that had a channel selected.
+      channelId = 0;
     } else if (!Number.isFinite(channelId) || channelId <= 0) {
       toasts.error('Channel required');
       return;
@@ -437,8 +451,32 @@
       modalOpen = false;
       beacons = await api.get('/beacons') || [];
       refreshChannels();
+      if (data.send_path === 'is_only') {
+        await ensureIgateEnabled();
+      }
     } catch (err) {
       toasts.error(err.message);
+    }
+  }
+
+  // An APRS-IS-only beacon only reaches the network when the iGate is
+  // connected to APRS-IS. Auto-enable the iGate on save so a radioless
+  // operator isn't left wondering why nothing shows up on aprs.fi.
+  // Best-effort: the beacon is already saved, so any failure here is
+  // surfaced as a toast rather than failing the whole operation.
+  async function ensureIgateEnabled() {
+    try {
+      const cfg = await api.get('/igate/config');
+      if (!cfg || cfg.enabled) return;
+      await api.put('/igate/config', { ...cfg, enabled: true });
+      toasts.success('iGate enabled so your APRS-IS-only beacon can reach the network');
+    } catch (err) {
+      // The most common failure here is a missing station callsign: the
+      // backend refuses to enable the iGate until one is set, which is
+      // exactly the state of a fresh radioless install. Surface the
+      // server's own actionable message rather than a generic "try the
+      // iGate page" that would fail for the same reason.
+      toasts.error(`Beacon saved, but the iGate could not be enabled automatically: ${err.message || 'enable it on the iGate page so APRS-IS-only beacons transmit.'}`);
     }
   }
 
@@ -497,13 +535,29 @@
   <Button variant="primary" onclick={openCreate}>+ Add Beacon</Button>
 </PageHeader>
 
+<!-- Gated on lastUpdated (set only after a successful fetch) so the
+     banner doesn't flash before the channels store's first load, and
+     stays hidden if that fetch errors — we don't claim "no channels"
+     when we don't actually know the channel set yet. -->
+{#if channelsStore.lastUpdated && channels.length === 0}
+  <div class="no-rf-banner" role="note">
+    <span class="no-rf-banner-icon" aria-hidden="true">&#9432;</span>
+    <div class="no-rf-banner-body">
+      <strong>No radio channels configured.</strong>
+      You can still beacon to APRS-IS only (no radio needed). To transmit
+      over RF, <a href="#/channels">create a channel</a> first.
+    </div>
+  </div>
+{/if}
+
 {#if beacons.length === 0}
   <div class="empty-state">No beacons configured. Add a beacon to start transmitting position reports.</div>
 {:else}
   <div class="beacon-grid">
     {#each beacons as b}
+      {@const isOnly = b.send_path === 'is_only'}
       {@const refStatus = channelRefStatus(b.channel, channelsById)}
-      {@const broken = refStatus.status !== STATUS_OK}
+      {@const broken = !isOnly && refStatus.status !== STATUS_OK}
       {@const pillAriaLabel = broken
         ? (refStatus.status === STATUS_DELETED
             ? `Channel #${b.channel} deleted`
@@ -552,6 +606,10 @@
         </div>
 
         <div class="beacon-channel" class:broken>
+          {#if isOnly}
+            <span class="channel-label">Send to</span>
+            <span class="channel-value">APRS-IS only (no radio)</span>
+          {:else}
           <span
             class="channel-label"
             class:danger={broken}
@@ -568,6 +626,7 @@
           </span>
           {#if refStatus.status !== STATUS_DELETED}
             <span class="channel-value">{channelName(b.channel)}</span>
+          {/if}
           {/if}
         </div>
 
@@ -699,16 +758,36 @@
           <Input id="bcn-objname" bind:value={form.object_name} placeholder="e.g. FIELDDAY" maxlength="9" />
         </FormField>
       {/if}
-      <FormField label="Channel" id="bcn-channel"
-        hint="Radio channel this beacon transmits on. Defined on the Channels page.">
-        <ChannelListbox
-          id="bcn-channel"
-          bind:value={form.channel}
-          valueType="string"
-          channels={channels}
-          capabilityFilter={txPredicate}
-        />
+      <FormField label="Send to" id="bcn-send-path"
+        hint="Where this beacon is transmitted. APRS-IS only needs no radio channel — ideal for a station with no radio.">
+        <RadioGroup bind:value={form.send_path}>
+          <div class="pos-source-row">
+            <Radio value="rf" label="RF only" />
+            <Radio value="both" label="RF + APRS-IS" />
+            <Radio value="is_only" label="APRS-IS only (no radio)" />
+          </div>
+        </RadioGroup>
       </FormField>
+      {#if needsChannel}
+        {#if channels.length === 0}
+          <div class="no-channel-note" role="note">
+            No radio channels are configured. Add one on the
+            <a href="#/channels">Channels page</a>, or choose
+            <strong>APRS-IS only</strong> above to beacon without a radio.
+          </div>
+        {:else}
+          <FormField label="Channel" id="bcn-channel"
+            hint="Radio channel this beacon transmits on. Defined on the Channels page.">
+            <ChannelListbox
+              id="bcn-channel"
+              bind:value={form.channel}
+              valueType="string"
+              channels={channels}
+              capabilityFilter={txPredicate}
+            />
+          </FormField>
+        {/if}
+      {/if}
       <FormField
         label={form.type === 'object' ? 'Transmitting station (via)' : 'Callsign'}
         id="bcn-call"
@@ -842,16 +921,6 @@
       <FormField label="Slot (seconds past the hour)" id="bcn-slot"
         hint="Optional. Aligns each transmission to a fixed second past the top of the hour so multiple beacons stagger instead of flooding. E.g. 0 fires at :00/:30 with a 1800 s interval; 900 fires at :15/:45. Leave blank to fire on a plain interval.">
         <Input id="bcn-slot" bind:value={form.slot} type="number" min="0" max="3599" placeholder="e.g. 0" />
-      </FormField>
-      <FormField label="Destination" id="bcn-send-path"
-        hint="Where this beacon is transmitted. APRS-IS only needs no radio channel.">
-        <RadioGroup bind:value={form.send_path}>
-          <div class="pos-source-row">
-            <Radio value="rf" label="RF only" />
-            <Radio value="both" label="RF + APRS-IS" />
-            <Radio value="is_only" label="APRS-IS only (no radio)" />
-          </div>
-        </RadioGroup>
       </FormField>
     </div>
   </div>
@@ -1139,6 +1208,38 @@
     font-size: 12px;
     color: var(--color-text-muted, #888);
     line-height: 1.4;
+  }
+  .no-channel-note {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--color-text-muted, #888);
+    background: var(--bg-secondary);
+    border: 1px dashed var(--border-color);
+    border-radius: var(--radius);
+  }
+  .no-rf-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 16px;
+    padding: 12px 14px;
+    font-size: 13px;
+    line-height: 1.45;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--color-info, #3b82f6);
+    border-radius: var(--radius);
+  }
+  .no-rf-banner-icon {
+    flex: 0 0 auto;
+    font-size: 16px;
+    color: var(--color-info, #3b82f6);
+    line-height: 1.4;
+  }
+  .no-rf-banner-body {
+    color: var(--text-secondary, var(--color-text-muted, #888));
   }
   .symbol-swatch {
     flex: 0 0 auto;
