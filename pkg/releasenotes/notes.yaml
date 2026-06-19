@@ -7,6 +7,25 @@
 # route the body references via [text](link) markdown; renderer only
 # accepts internal #/... routes.
 
+- version: "0.14.5"
+  date: "2026-06-19"
+  style: info
+  schema_version: 1
+  link: "#/beacons"
+  title: "Beacon to APRS-IS without a radio"
+  body: |
+    Beacons now have a Destination control that picks where each one
+    goes: RF only, RF plus APRS-IS, or APRS-IS only with no radio. The
+    new APRS-IS only option puts a beacon straight onto the APRS-IS
+    network without keying a radio, so a host with just an internet
+    connection can still beacon its position. Turn the iGate on first so
+    there is an APRS-IS connection to send through.
+
+    Along the way, APRS-IS beacons now reliably reach the network and
+    show up in your packet log, and a beacon whose callsign,
+    destination, or path is not a valid APRS address is rejected when
+    you save it, instead of quietly never transmitting.
+
 - version: "0.14.4"
   date: "2026-06-19"
   style: info
