@@ -7,6 +7,27 @@
 # route the body references via [text](link) markdown; renderer only
 # accepts internal #/... routes.
 
+- version: "0.14.8"
+  date: "2026-06-22"
+  style: info
+  schema_version: 1
+  link: "#/logs"
+  title: "APRS Logs: non-printable bytes, auto-refresh, and Mic-E comments"
+  body: |
+    The APRS Logs tab can now keep up with live traffic on its own. New
+    auto-refresh and auto-scroll toggles pull in and follow new packets
+    without you reloading the page. Packets that carry non-printable
+    bytes now show them plainly, with a Hex toggle to flip the raw frame
+    between a readable view and a straight hex dump. Mic-E mobile beacons
+    now show their comment text instead of dropping it.
+
+    Smaller touches: the map status bar shows its red error dot right
+    away when you open it offline, the default theme has better contrast
+    on its primary color, and on Android the message compose bar stays
+    above the on-screen keyboard. The handbook also gains notes on
+    testing VOX and Digirig tone PTT keying, plus a Serial RTS PTT
+    recommendation for the Digirig Mobile.
+
 - version: "0.14.7"
   date: "2026-06-20"
   style: info
