@@ -1198,3 +1198,50 @@ Source: [`../../pkg/aprs/mice.go`](../../pkg/aprs/mice.go)
 (`buildStationEntry`),
 [`../../pkg/aprs/mice_test.go`](../../pkg/aprs/mice_test.go)
 (`TestParseMicECommentSurfaced`).
+
+### 52. "RF Only" classifies on the current fix, not the whole trail
+
+The Live Map "RF Only" filter shows a station only when its **current fix**
+(`positions[0]`) arrived over the air (`direction === 'RX'`) and was not
+Internet-to-RF gated (`gated`). The predicate `isRfOnly`
+(`web/src/lib/map/rf-only-core.js`) inspects only `positions[0]` -- never the
+accumulated trail.
+
+*Why:* the data store accumulates a per-callsign trail by prepending each delta
+fix (`data-store.svelte.js` `mergeStation`). A mobile station heard on RF
+earlier and now arriving only via APRS-IS keeps a stale RF breadcrumb deep in
+that trail. The old predicate scanned every position and qualified the station
+on that stale breadcrumb, so it stayed visible under RF Only even though its
+marker (drawn at `positions[0]`) and popup badge labeled it `APRS-IS` -- the bug
+in graywolf GitHub #394. The marker is always `positions[0]`, so the filter must
+classify off that same fix.
+
+*Top-level fields vs. positions[0] -- they are NOT the same.*
+`stationcache.updateMetadata` overwrites the **station-level** `Direction`/
+`Via`/`Gated` (exposed as the top-level `StationDTO` fields, and what the popup
+badge reads via `popup.js` `s.direction` and `viaText`'s `s.via === 'is'`) with
+the **latest** packet on every update, unconditionally. `positions[0]`, by
+contrast, is rfRank-protected for static re-beacons. For the common case (a
+fresh or moving station) `positions[0]` *is* the latest fix and matches the
+badge; they diverge only for a static station heard on RF then re-beaconed via
+IS, where `positions[0]` stays `RX` (rfRank) while the top-level badge flips to
+`IS`. RF Only intentionally keys on the rfRank-protected `positions[0]`, so that
+static station stays visible (next paragraph) even though its popup badge may
+read APRS-IS. Do **not** "fix" that by classifying off the top-level fields --
+that would re-hide RF-reachable static stations.
+
+*How to apply:* keep RF Only keyed on `positions[0]` only. Static stations are
+preserved -- `stationcache`'s static-rebeacon merge folds the most RF-reachable
+copy of a fix into `positions[0]` via `rfRank` (invariant #48), so a fixed
+station once heard on RF and later re-beaconed via a gated/IS copy still
+qualifies. RF Only is the looser companion to Direct RX (#48): it keeps
+RF-digipeated stations (`hops > 0`) and drops only APRS-IS and Internet-to-RF
+gated current fixes.
+
+Source: [`../../web/src/lib/map/rf-only-core.js`](../../web/src/lib/map/rf-only-core.js)
+(`isRfOnly`),
+[`../../web/src/lib/map/rf-only-core.test.js`](../../web/src/lib/map/rf-only-core.test.js),
+[`../../web/src/routes/LiveMapV2.svelte`](../../web/src/routes/LiveMapV2.svelte)
+(filter `$effect`, `rfOnlyStationCount`),
+[`../../web/src/lib/map/popup-helpers.js`](../../web/src/lib/map/popup-helpers.js)
+(`viaText`).
