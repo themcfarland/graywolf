@@ -206,9 +206,10 @@
   // attaches the token to it without any wiring here.
   let frontsToken = null;
   let frontsPollTimer = null;
+  let frontsDataRetry = null; // short retry until registration+token are ready
   // One issuance marker per source (WPC analysis + model-derived world). Either
-  // changing triggers a reload of both GeoJSON sources (the layer's reload()
-  // refreshes both -- cheap, and they share the toggle).
+  // changing triggers a refetch of both GeoJSON documents via loadFrontsData()
+  // (they share the toggle and the smoothing path).
   let lastFrontsIssued = null;
   let lastFrontsWorldIssued = null;
   // De-dupe diagnostics like warnRadar: a persistent failure would otherwise
@@ -273,17 +274,73 @@
       if (lastFrontsWorldIssued !== null && world !== lastFrontsWorldIssued) changed = true;
       lastFrontsWorldIssued = world;
     }
-    if (changed) frontsLayer?.reload();
+    if (changed) loadFrontsData();
+  }
+  // Fetch the GeoJSON document (token-gated, same as the manifest) and hand it
+  // to the layer, which smooths the lines before rendering. Kept here rather
+  // than in the layer module so all bearer-token handling stays in one place.
+  // Fetch one fronts GeoJSON document (token-gated, same as the manifest) and
+  // return the parsed object, or undefined on any failure. A 401 clears the
+  // token to re-reveal. Diagnostics are de-duped PER SOURCE like the manifest
+  // poll, so a healthy `na` never silences a persistently-failing `world`.
+  async function fetchFrontsDoc(dataUrl, label) {
+    const url = `${dataUrl}?t=${encodeURIComponent(frontsToken)}`;
+    let resp;
+    try {
+      resp = await fetch(url);
+    } catch (e) {
+      warnFronts(`${label}-data-network`, `[fronts] ${label} geojson fetch failed (network/CORS)`, e);
+      return undefined;
+    }
+    if (resp.status === 401) {
+      frontsToken = null; // stale token -- re-reveal next load
+      warnFronts(`${label}-data-401`, `[fronts] ${label} geojson 401 -- token rejected; will re-reveal`);
+      return undefined;
+    }
+    if (!resp.ok) {
+      warnFronts(`${label}-data-http`, `[fronts] ${label} geojson fetch HTTP ${resp.status}`);
+      return undefined;
+    }
+    try {
+      const json = await resp.json();
+      clearFrontsWarn(label); // this source recovered
+      return json;
+    } catch (e) {
+      warnFronts(`${label}-data-parse`, `[fronts] ${label} geojson JSON parse failed`, e);
+      return undefined;
+    }
+  }
+  // Fetch both GeoJSON documents and hand them to the layer, which smooths the
+  // lines before rendering. Kept here rather than in the layer module so all
+  // bearer-token handling stays in one place. The world source rolling out 404s
+  // until published -- that warns once and the WPC overlay still paints.
+  async function loadFrontsData() {
+    if (frontsDataRetry) { clearTimeout(frontsDataRetry); frontsDataRetry = null; }
+    if (!mapsState.registered) { frontsDataRetry = setTimeout(loadFrontsData, 2000); return; }
+    if (!frontsToken) frontsToken = await mapsState.revealToken();
+    if (!frontsToken) { frontsDataRetry = setTimeout(loadFrontsData, 2000); return; }
+    const na = await fetchFrontsDoc(frontsProvider().dataUrl, 'na');
+    if (na !== undefined) frontsLayer?.setData(na);
+    // A 401 on the WPC doc cleared the token; skip the guaranteed second 401 and
+    // re-reveal on the next load.
+    if (!frontsToken) return;
+    const world = await fetchFrontsDoc(frontsWorldProvider().dataUrl, 'world');
+    if (world !== undefined) frontsLayer?.setWorldData(world);
   }
   function startFrontsPolling() {
     if (frontsPollTimer) return;
-    pollFrontsManifest(); // immediate first check
+    loadFrontsData(); // pull the document now so the overlay paints immediately
+    pollFrontsManifest(); // immediate first manifest check (drives later reloads)
     frontsPollTimer = setInterval(pollFrontsManifest, 5 * 60 * 1000);
   }
   function stopFrontsPolling() {
     if (frontsPollTimer) {
       clearInterval(frontsPollTimer);
       frontsPollTimer = null;
+    }
+    if (frontsDataRetry) {
+      clearTimeout(frontsDataRetry);
+      frontsDataRetry = null;
     }
   }
 
@@ -554,6 +611,13 @@
     // Surface fronts ride just above radar in the GL stack (lines + pip symbols
     // over the reflectivity fill) and below the station/trail markers.
     frontsLayer = mountFrontsLayer(map, { visible: layerToggles.fronts });
+    // Debug hooks for live front-symbology tuning from the browser console:
+    //   window.gwFronts.tune({ pipSize: 0.7, statSpacing: 30, lineWidth: 3 })
+    //   window.gwFronts.info()   window.gwMap.getZoom()
+    if (typeof window !== 'undefined') {
+      window.gwMap = map;
+      window.gwFronts = frontsLayer;
+    }
     // Trails first so the line sits beneath the (DOM) station markers
     // and below the weather labels in symbol-layer order.
     trailsLayer = mountTrailsLayer(map, () => dataStore.stations, {
@@ -1094,141 +1158,153 @@
   />
 
   {#snippet panelBody()}
-    <div class="layer-toggles">
-      <label class="toggle-row">
-        <input
-          type="checkbox"
-          checked={layerToggles.stations}
-          onchange={(e) => (layerToggles.stations = e.currentTarget.checked)}
-        />
-        <span>Stations</span>
-      </label>
-      <label class="toggle-row">
-        <input
-          type="checkbox"
-          checked={layerToggles.trails}
-          onchange={(e) => (layerToggles.trails = e.currentTarget.checked)}
-        />
-        <span>Trails</span>
-      </label>
-      <label class="toggle-row">
-        <input
-          type="checkbox"
-          checked={layerToggles.weather}
-          onchange={(e) => (layerToggles.weather = e.currentTarget.checked)}
-        />
-        <span>Weather</span>
-      </label>
-      <label class="toggle-row">
-        <input
-          type="checkbox"
-          checked={layerToggles.myPosition}
-          onchange={(e) => (layerToggles.myPosition = e.currentTarget.checked)}
-        />
-        <span>My Position</span>
-      </label>
-      <label class="toggle-row">
-        <input
-          type="checkbox"
-          checked={layerToggles.fixedPoints}
-          onchange={(e) => (layerToggles.fixedPoints = e.currentTarget.checked)}
-        />
-        <span>Fixed Points</span>
-      </label>
-      <label class="toggle-row">
-        <input
-          type="checkbox"
-          checked={layerToggles.fronts}
-          onchange={(e) => (layerToggles.fronts = e.currentTarget.checked)}
-        />
-        <span>Fronts</span>
-      </label>
-      <label class="toggle-row">
-        <input
-          type="checkbox"
-          checked={layerToggles.directRxOnly}
-          onchange={(e) => (layerToggles.directRxOnly = e.currentTarget.checked)}
-        />
-        <span>Direct RX</span>
-      </label>
-      <label class="toggle-row">
-        <input
-          type="checkbox"
-          checked={layerToggles.rfOnly}
-          onchange={(e) => (layerToggles.rfOnly = e.currentTarget.checked)}
-        />
-        <span>RF Only</span>
-      </label>
-      <label class="toggle-row">
-        <input
-          type="checkbox"
-          checked={radarSettings.visible}
-          onchange={(e) => (radarSettings.visible = e.currentTarget.checked)}
-        />
-        <span>Radar</span>
-      </label>
-    </div>
-
-    <label class="timerange-label" for="radar-opacity-range">
-      Radar opacity: {Math.round(radarSettings.opacity * 100)}%
-    </label>
-    <input
-      id="radar-opacity-range"
-      type="range"
-      min="0.1"
-      max="1.0"
-      step="0.05"
-      class="radar-opacity-range"
-      bind:value={radarSettings.opacity}
-    />
-
-    {#if radarSettings.visible}
-      <!-- Radar loop animation: two text buttons [Play/Pause][Reset] and a
-           frame-position slider. Disabled until the manifest yields >1 frame. -->
-      <div class="radar-anim-buttons">
-        <button
-          type="button"
-          class="radar-anim-btn"
-          onclick={() => radarFrames.toggle()}
-          disabled={radarFrames.count <= 1}
-          aria-label={radarFrames.playing ? 'Pause radar loop' : 'Play radar loop'}
-        >
-          {radarFrames.playing ? 'Pause' : 'Play'}
-        </button>
-        <button
-          type="button"
-          class="radar-anim-btn"
-          onclick={() => radarFrames.stop()}
-          disabled={radarFrames.count <= 1}
-          aria-label="Reset radar loop and jump to the latest frame"
-        >
-          Reset
-        </button>
+    <!-- APRS: station/trail/position layers + the time-range filter. -->
+    <section class="layer-section">
+      <h3 class="layer-section-title">APRS</h3>
+      <div class="layer-toggles">
+        <label class="toggle-row">
+          <input
+            type="checkbox"
+            checked={layerToggles.stations}
+            onchange={(e) => (layerToggles.stations = e.currentTarget.checked)}
+          />
+          <span>Stations</span>
+        </label>
+        <label class="toggle-row">
+          <input
+            type="checkbox"
+            checked={layerToggles.weather}
+            onchange={(e) => (layerToggles.weather = e.currentTarget.checked)}
+          />
+          <span>Weather Stations</span>
+        </label>
+        <label class="toggle-row">
+          <input
+            type="checkbox"
+            checked={layerToggles.trails}
+            onchange={(e) => (layerToggles.trails = e.currentTarget.checked)}
+          />
+          <span>Trails</span>
+        </label>
+        <label class="toggle-row">
+          <input
+            type="checkbox"
+            checked={layerToggles.myPosition}
+            onchange={(e) => (layerToggles.myPosition = e.currentTarget.checked)}
+          />
+          <span>My Position</span>
+        </label>
+        <label class="toggle-row">
+          <input
+            type="checkbox"
+            checked={layerToggles.fixedPoints}
+            onchange={(e) => (layerToggles.fixedPoints = e.currentTarget.checked)}
+          />
+          <span>Fixed Points</span>
+        </label>
+        <label class="toggle-row">
+          <input
+            type="checkbox"
+            checked={layerToggles.directRxOnly}
+            onchange={(e) => (layerToggles.directRxOnly = e.currentTarget.checked)}
+          />
+          <span>Direct RX</span>
+        </label>
+        <label class="toggle-row">
+          <input
+            type="checkbox"
+            checked={layerToggles.rfOnly}
+            onchange={(e) => (layerToggles.rfOnly = e.currentTarget.checked)}
+          />
+          <span>RF Only</span>
+        </label>
       </div>
-      <label class="timerange-label" for="radar-frame-range">{radarFrameLabel}</label>
-      <input
-        id="radar-frame-range"
-        type="range"
-        class="radar-frame-range"
-        min="0"
-        max={Math.max(0, radarFrames.count - 1)}
-        step="1"
-        value={radarFrames.index}
-        oninput={(e) => radarFrames.seek(Number(e.currentTarget.value))}
-        disabled={radarFrames.count <= 1}
-      />
-    {/if}
 
-    <label class="timerange-label" for="map-timerange-select">Time range</label>
-    <select
-      id="map-timerange-select"
-      class="map-timerange-select"
-      bind:value={timerangeSec}
-    >
-      {#each TIMERANGES_S as opt}
-        <option value={opt.value}>{opt.label}</option>
-      {/each}
-    </select>
+      <label class="timerange-label" for="map-timerange-select">Time range</label>
+      <select
+        id="map-timerange-select"
+        class="map-timerange-select"
+        bind:value={timerangeSec}
+      >
+        {#each TIMERANGES_S as opt}
+          <option value={opt.value}>{opt.label}</option>
+        {/each}
+      </select>
+    </section>
+
+    <!-- Weather: fronts + radar overlays and their controls. (The surface-obs
+         layer toggle is "Weather Stations", grouped under APRS with Stations.) -->
+    <section class="layer-section">
+      <h3 class="layer-section-title">Weather</h3>
+      <div class="layer-toggles">
+        <label class="toggle-row">
+          <input
+            type="checkbox"
+            checked={layerToggles.fronts}
+            onchange={(e) => (layerToggles.fronts = e.currentTarget.checked)}
+          />
+          <span>Fronts</span>
+        </label>
+        <label class="toggle-row">
+          <input
+            type="checkbox"
+            checked={radarSettings.visible}
+            onchange={(e) => (radarSettings.visible = e.currentTarget.checked)}
+          />
+          <span>Radar</span>
+        </label>
+      </div>
+
+      <label class="timerange-label" for="radar-opacity-range">
+        Radar opacity: {Math.round(radarSettings.opacity * 100)}%
+      </label>
+      <input
+        id="radar-opacity-range"
+        type="range"
+        min="0.1"
+        max="1.0"
+        step="0.05"
+        class="radar-opacity-range"
+        bind:value={radarSettings.opacity}
+      />
+
+      {#if radarSettings.visible}
+        <!-- Radar loop animation: two text buttons [Play/Pause][Reset] and a
+             frame-position slider. Disabled until the manifest yields >1 frame. -->
+        <div class="radar-anim-buttons">
+          <button
+            type="button"
+            class="radar-anim-btn"
+            onclick={() => radarFrames.toggle()}
+            disabled={radarFrames.count <= 1}
+            aria-label={radarFrames.playing ? 'Pause radar loop' : 'Play radar loop'}
+          >
+            {radarFrames.playing ? 'Pause' : 'Play'}
+          </button>
+          <button
+            type="button"
+            class="radar-anim-btn"
+            onclick={() => radarFrames.stop()}
+            disabled={radarFrames.count <= 1}
+            aria-label="Reset radar loop and jump to the latest frame"
+          >
+            Reset
+          </button>
+        </div>
+        <label class="timerange-label" for="radar-frame-range">{radarFrameLabel}</label>
+        <input
+          id="radar-frame-range"
+          type="range"
+          class="radar-frame-range"
+          min="0"
+          max={Math.max(0, radarFrames.count - 1)}
+          step="1"
+          value={radarFrames.index}
+          oninput={(e) => radarFrames.seek(Number(e.currentTarget.value))}
+          disabled={radarFrames.count <= 1}
+        />
+      {/if}
+    </section>
   {/snippet}
 
   {#if isMobile}
@@ -1443,6 +1519,22 @@
     padding: 10px 12px;
   }
 
+  /* Grouped sections (APRS, Weather) within the layers pane. A divider +
+     uppercase label separates the groups so the pane reads as two columns of
+     related controls rather than one long list. */
+  .layer-section + .layer-section {
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--map-overlay-border);
+  }
+  .layer-section-title {
+    margin: 0 0 8px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--color-text-muted);
+  }
   .layer-toggles {
     display: flex;
     flex-direction: column;
