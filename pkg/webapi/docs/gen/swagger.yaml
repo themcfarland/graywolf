@@ -941,6 +941,30 @@ definitions:
         description: '"sent"'
         type: string
     type: object
+  dto.BlockedCallsignRequest:
+    properties:
+      callsign:
+        type: string
+      enabled:
+        type: boolean
+      note:
+        type: string
+    type: object
+  dto.BlockedCallsignResponse:
+    properties:
+      callsign:
+        type: string
+      created_at:
+        type: string
+      enabled:
+        type: boolean
+      id:
+        type: integer
+      note:
+        type: string
+      updated_at:
+        type: string
+    type: object
   dto.BlocklistEntryRequest:
     properties:
       enabled:
@@ -6242,6 +6266,135 @@ paths:
       security:
         - CookieAuth: []
       summary: Mark message unread
+      tags:
+        - messages
+  /messages/blocklist:
+    get:
+      operationId: listBlockedCallsigns
+      produces:
+        - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/dto.BlockedCallsignResponse'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/webtypes.ErrorResponse'
+      security:
+        - CookieAuth: []
+      summary: List blocked call signs
+      tags:
+        - messages
+    post:
+      consumes:
+        - application/json
+      operationId: createBlockedCallsign
+      parameters:
+        - description: Blocklist entry
+          in: body
+          name: body
+          required: true
+          schema:
+            $ref: '#/definitions/dto.BlockedCallsignRequest'
+      produces:
+        - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/dto.BlockedCallsignResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/webtypes.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/webtypes.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/webtypes.ErrorResponse'
+      security:
+        - CookieAuth: []
+      summary: Block a call sign
+      tags:
+        - messages
+  /messages/blocklist/{id}:
+    delete:
+      operationId: deleteBlockedCallsign
+      parameters:
+        - description: Blocklist entry id
+          in: path
+          name: id
+          required: true
+          type: integer
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/webtypes.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/webtypes.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/webtypes.ErrorResponse'
+      security:
+        - CookieAuth: []
+      summary: Unblock a call sign
+      tags:
+        - messages
+    put:
+      consumes:
+        - application/json
+      operationId: updateBlockedCallsign
+      parameters:
+        - description: Blocklist entry id
+          in: path
+          name: id
+          required: true
+          type: integer
+        - description: Blocklist entry
+          in: body
+          name: body
+          required: true
+          schema:
+            $ref: '#/definitions/dto.BlockedCallsignRequest'
+      produces:
+        - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.BlockedCallsignResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/webtypes.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/webtypes.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/webtypes.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/webtypes.ErrorResponse'
+      security:
+        - CookieAuth: []
+      summary: Update a blocked call sign
       tags:
         - messages
   /messages/config:
