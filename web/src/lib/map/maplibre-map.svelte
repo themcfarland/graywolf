@@ -225,10 +225,13 @@
     // twist is ignored. Desktop right-drag rotate (dragRotate) and the
     // compass reset are untouched, so this needs no settings switch.
     map.touchZoomRotate.disableRotation();
+    // Plain flat compass, like most maps: the needle rotates with bearing
+    // and resets north on click. visualizePitch is left off so the needle
+    // stays 2D instead of tilting into a 3D perspective as the map pitches.
     map.addControl(
       new maplibregl.NavigationControl({
         showCompass: true,
-        visualizePitch: true,
+        visualizePitch: false,
       }),
       'top-right',
     );
