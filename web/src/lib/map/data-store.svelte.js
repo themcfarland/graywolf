@@ -65,7 +65,8 @@ export function createDataStore() {
   let etag = null;                       // last response ETag, used in If-None-Match
   let sinceCursor = null;                // RFC3339Nano string of newest last_heard seen
   let timer = null;                      // setTimeout handle
-  let inFlight = false;                  // dedupe overlapping fetches
+  let inFlight = false;                  // dedupe overlapping /api/stations fetches
+  let posInFlight = false;               // dedupe overlapping /api/position fetches
   let backoff = POLL_BASE_MS;            // current delay; doubles on error
   let started = false;                   // start()/stop() guard
   let visibilityHandler = null;          // bound listener for cleanup
@@ -219,6 +220,10 @@ export function createDataStore() {
   }
 
   async function fetchMyPosition() {
+    // Dedupe so a visibility catch-up firing mid-tick can't race a scheduled
+    // poll and let the older of two near-identical fixes win the assignment.
+    if (posInFlight) return;
+    posInFlight = true;
     try {
       const res = await fetch('/api/position', { credentials: 'same-origin' });
       if (!res.ok) return;
@@ -226,6 +231,8 @@ export function createDataStore() {
       myPosition = pos && pos.valid ? pos : null;
     } catch (_) {
       // Non-fatal; leave myPosition unchanged.
+    } finally {
+      posInFlight = false;
     }
   }
 
@@ -240,7 +247,11 @@ export function createDataStore() {
         schedule();
         return;
       }
-      await fetchOnce();
+      // Refresh own position on every tick so the blue dot follows live GPS
+      // instead of freezing at the page-load fix (GH #473). It's an in-memory
+      // read on the server and independent of the stations bbox, so run it
+      // alongside fetchOnce rather than gating it on that call.
+      await Promise.all([fetchOnce(), fetchMyPosition()]);
       if (started) schedule();
     }, backoff);
   }
@@ -249,7 +260,8 @@ export function createDataStore() {
     if (typeof document === 'undefined') return;
     if (document.visibilityState === 'visible' && started) {
       // Immediate catch-up; clearTimeout inside schedule() prevents double-chains.
-      fetchOnce().then(() => {
+      // Refresh the blue dot too so it isn't stale after the tab was hidden.
+      Promise.all([fetchOnce(), fetchMyPosition()]).then(() => {
         if (started) schedule();
       });
     }

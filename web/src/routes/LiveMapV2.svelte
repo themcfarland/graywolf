@@ -1117,6 +1117,11 @@
   // box of every callsign heard in the last hour. Suppressed when a
   // persisted view exists — restoring that view is what the operator
   // wants on reload.
+  //
+  // myPosition now refreshes on every poll tick (data-store follows live
+  // GPS), so this effect re-runs continuously. The didAutoFit guard is what
+  // keeps the recenter one-shot — without it the camera would snap back to
+  // the blue dot on every fix and fight the operator's panning.
   $effect(() => {
     const my = dataStore.myPosition;
     if (!my || !mapRef || didAutoFit) return;
