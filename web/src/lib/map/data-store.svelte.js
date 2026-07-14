@@ -240,7 +240,11 @@ export function createDataStore() {
         schedule();
         return;
       }
-      await fetchOnce();
+      // Refresh own position on every tick so the blue dot follows live GPS
+      // instead of freezing at the page-load fix (GH #473). It's an in-memory
+      // read on the server and independent of the stations bbox, so run it
+      // alongside fetchOnce rather than gating it on that call.
+      await Promise.all([fetchOnce(), fetchMyPosition()]);
       if (started) schedule();
     }, backoff);
   }
@@ -249,7 +253,8 @@ export function createDataStore() {
     if (typeof document === 'undefined') return;
     if (document.visibilityState === 'visible' && started) {
       // Immediate catch-up; clearTimeout inside schedule() prevents double-chains.
-      fetchOnce().then(() => {
+      // Refresh the blue dot too so it isn't stale after the tab was hidden.
+      Promise.all([fetchOnce(), fetchMyPosition()]).then(() => {
         if (started) schedule();
       });
     }
