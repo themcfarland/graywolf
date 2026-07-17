@@ -324,6 +324,7 @@ nssm start Graywolf</code></pre>
   --name graywolf \
   --restart unless-stopped \
   --device /dev/snd \
+  --group-add audio \
   -p 8080:8080/tcp \
   -v graywolf-data:/data \
   ghcr.io/chrissnell/graywolf:latest \
@@ -338,6 +339,18 @@ nssm start Graywolf</code></pre>
               For serial PTT or GPS, pass the serial device as well
               (e.g., <code>--device /dev/ttyUSB0</code>).
             </p>
+            <p>
+              The image runs as a non-root user, so
+              <code>--group-add audio</code> is also required &mdash;
+              without it the modem cannot open the sound-card device nodes
+              (<code>/dev/snd/pcmC*</code>, owned <code>root:audio</code>)
+              and <strong>Detect Devices</strong> finds nothing even though
+              <code>arecord -l</code> lists the card. If the
+              <code>audio</code> group name doesn't resolve inside the
+              container, use its numeric GID instead (GID 29 on Raspberry
+              Pi OS / Debian; confirm with <code>getent group audio</code>
+              on the host).
+            </p>
           </div>
         </div>
 
@@ -351,6 +364,8 @@ nssm start Graywolf</code></pre>
     restart: unless-stopped
     devices:
       - /dev/snd:/dev/snd
+    group_add:
+      - audio
     ports:
       - "8080:8080/tcp"
     volumes:

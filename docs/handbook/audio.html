@@ -100,6 +100,23 @@
       right there.
     </p>
 
+    <div class="callout warn">
+      <span class="callout-icon">&#9888;</span>
+      <div class="callout-body">
+        <p>
+          <strong>Running in Docker and Detect Devices finds nothing?</strong>
+          Detection opens each sound card to probe it, which needs
+          <code>audio</code>-group access to <code>/dev/snd</code>. The
+          container image runs as a non-root user, so besides
+          <code>--device /dev/snd</code> you must add
+          <code>--group-add audio</code> (Compose: <code>group_add: [audio]</code>).
+          Without it, <code>arecord -l</code> still lists the card &mdash; it
+          only reads <code>/proc/asound</code> &mdash; but detection comes up
+          empty. See <a href="installation.html">Installation &rarr; Docker</a>.
+        </p>
+      </div>
+    </div>
+
     <h2>Source Types</h2>
 
     <div class="box">
