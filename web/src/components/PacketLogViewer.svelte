@@ -358,7 +358,11 @@
     font-size: 0.65rem;
     color: var(--color-text-dim);
     line-height: 1.5;
-    white-space: normal;
+    /* pre-wrap (not normal) so runs of spaces are preserved: APRS object/item
+       reports space-pad the 9-char name field, and `normal` collapsed that
+       padding to a single space, making a correctly-encoded ";PARK     *" look
+       like an unpadded ";PARK *". Still wraps at the container edge. */
+    white-space: pre-wrap;
     overflow-wrap: anywhere;
     word-break: break-all;
   }
